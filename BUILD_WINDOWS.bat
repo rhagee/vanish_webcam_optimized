@@ -15,12 +15,11 @@ if errorlevel 1 (
   if errorlevel 1 goto :error
 )
 
-if not exist "models\gesture_recognizer.task" goto :models
 if not exist "models\selfie_segmenter_landscape.tflite" goto :models
 goto :build
 
 :models
-echo Scarico i modelli MediaPipe necessari...
+echo Scarico il modello MediaPipe necessario...
 py -3 -c "from vanish_cam import download_models; download_models()"
 if errorlevel 1 goto :error
 

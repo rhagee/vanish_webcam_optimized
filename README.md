@@ -1,44 +1,67 @@
-# Webcam con effetti di sparizione
+# Naruto Vanish per webcam
 
 Il video viene elaborato sul computer e non viene registrato né inviato a un
 server. La finestra di anteprima e la webcam virtuale contengono solo il video
 e l'effetto, senza menu, istruzioni o altre scritte sovrapposte.
 
-## ☕ Buy me a coffee
+## Crediti
 
-Se ti piace il progetto e vuoi supportarlo, puoi offrirmi un caffè tramite [PayPal](https://paypal.me/nicovic17) oppure [Revolut](https://revolut.me/nicoauriemma).
-
-
-## Download per Windows
-
-[Scarica VanishCam.exe](https://firebasestorage.googleapis.com/v0/b/graficammece-9b254.firebasestorage.app/o/vanish_cam%2FVanishCam.exe?alt=media&token=82017e0a-52b9-420d-88ba-a4640d5e2ffc) e avvialo con un doppio clic. Non serve installare Python.
+Basato sul progetto originale di **Nicola Auriemma**, che ha creato l'app
+webcam, l'effetto Naruto Vanish, il tronco e l'audio. Questa versione è
+semplificata alla sola modalità Naruto e ottimizzata per non rallentare la
+webcam.
 
 ## Avvio
 
 1. Fai doppio clic su `AVVIA_LOCALE.bat`.
-2. Nel menu iniziale scegli **Normal Vanish** o **Naruto Vanish** con il mouse
-   oppure con i tasti `1` e `2`.
-3. Esci dall'inquadratura per 4 secondi, mentre viene acquisito lo sfondo.
-   Il terminale segnala quando puoi rientrare.
+2. Al primo avvio esci dall'inquadratura: dopo 3 secondi l'app cattura lo
+   sfondo per 3 secondi e lo salva. Agli avvii successivi riusa lo sfondo
+   scelto l'ultima volta, senza attese.
+3. Unisci i palmi davanti alla webcam, con le dita affiancate, e **tienili
+   uniti per mezzo secondo**: il corpo svanisce in una nube di fumo, compare
+   un tronco che cade e resta visibile finché non riappari.
 
+Quando parte la scomparsa viene riprodotto `assets/vanish.MP3`. Non serve un
+microfono.
 
-**Normal Vanish:** alza indice e medio a V. La dissolvenza parte al primo
-riconoscimento e dura circa 3,6 secondi.
+## Sfondi
 
-**Naruto Vanish:** unisci i palmi davanti alla webcam, con le dita affiancate e
-senza intrecciarle. Tieni visibili entrambe le mani. L'effetto parte al primo
-riconoscimento: il corpo svanisce in una nube di fumo, compare un tronco che
-cade verso il basso e resta visibile fino a `R`. Non serve un microfono.
-La modalità Naruto usa `hand_landmarker.task` per seguire entrambe le mani.
-Quando parte la scomparsa, riproduce `assets/vanish.MP3` dagli altoparlanti del
-computer. L'audio parte anche usando `V` e può ripartire dopo `R`.
+Accanto all'anteprima si apre la finestra **Sfondi**:
 
-Puoi avviare una modalità senza menu:
+- **Cattura sfondo**: 3 secondi per uscire dall'inquadratura, poi 3 secondi
+  di cattura. Lo sfondo viene salvato come PNG.
+- **Carica immagine**: scegli una qualsiasi immagine (PNG, JPG, BMP, WEBP);
+  viene copiata nella libreria e adattata alla risoluzione della webcam.
+- Clicca una miniatura per usarla. La scelta viene ricordata alla riapertura.
+
+Gli sfondi sono salvati nella cartella `backgrounds/` e la scelta in
+`settings.json`, accanto al programma.
+
+## Comandi
+
+Scorciatoie globali, funzionano anche se la finestra non è in primo piano
+(es. durante una call nel browser):
+
+- `Ctrl+Alt+R`: fa riapparire la persona.
+- `Ctrl+Alt+V`: avvia manualmente l'effetto.
+- `Ctrl+Alt+B`: cattura un nuovo sfondo.
+
+Con la finestra dell'anteprima in primo piano:
+
+- `B` oppure `SPAZIO`: cattura un nuovo sfondo.
+- `U`: carica un'immagine come sfondo.
+- `R` / `V`: riappari / svanisci.
+- `F`: attiva o disattiva lo schermo intero.
+- `Q` oppure `ESC`: chiude il programma e libera le webcam.
+
+Puoi cambiare webcam, risoluzione e FPS:
 
 ```powershell
-local_app\AVVIA_LOCALE.bat --mode naruto
-local_app\AVVIA_LOCALE.bat --mode normal
+AVVIA_LOCALE.bat --camera 1 --width 1280 --height 720 --fps 30
 ```
+
+Per diagnosticare il riconoscimento delle mani senza scritte nel video,
+aggiungi `--gesture-debug`: le informazioni appaiono solo nel terminale.
 
 ## Webcam virtuale e OBS
 
@@ -55,28 +78,11 @@ virtuale da OBS. In alternativa puoi usare
 virtuale distinta:
 
 ```powershell
-local_app\AVVIA_VIRTUAL.bat --virtual-backend unitycapture
+AVVIA_VIRTUAL.bat --virtual-backend unitycapture
 ```
 
 OBS ha una sola webcam virtuale; non usarla simultaneamente come ingresso e
 uscita di OBS. Vedi la [documentazione di pyvirtualcam](https://github.com/letmaik/pyvirtualcam#supported-virtual-cameras).
-
-## Comandi
-
-- `SPAZIO`: acquisisce nuovamente lo sfondo.
-- `R`: fa riapparire la persona.
-- `V`: avvia manualmente l'effetto della modalità scelta.
-- `F`: attiva o disattiva lo schermo intero.
-- `Q` oppure `ESC`: chiude il programma e libera le webcam.
-
-Puoi cambiare webcam, risoluzione e FPS massimi dell'uscita virtuale:
-
-```powershell
-local_app\AVVIA_LOCALE.bat --camera 1 --width 1280 --height 720 --fps 30
-```
-
-Per diagnosticare il riconoscimento senza scritte nel video, aggiungi
-`--gesture-debug`: le informazioni appaiono solo nel terminale.
 
 ## Asset visivi
 

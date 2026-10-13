@@ -1,4 +1,5 @@
 import argparse
+from pathlib import Path
 import unittest
 from contextlib import ExitStack
 from types import SimpleNamespace
@@ -6,14 +7,14 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from local_app import vanish_cam as app
+import vanish_cam as app
 
 
 def arguments(**overrides):
     values = dict(
         camera=0, width=960, height=540, fps=30.0, fullscreen=False,
         no_mirror=True, virtual_camera=None, virtual_backend=None, virtual_device=None,
-        gesture_debug=False, mode="normal",
+        gesture_debug=False, self_test=False,
     )
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -23,7 +24,7 @@ class VirtualCameraTests(unittest.TestCase):
     def test_bgr_format_and_actual_frame_dimensions(self):
         camera = Mock(device="OBS Virtual Camera")
         module = SimpleNamespace(Camera=Mock(return_value=camera), PixelFormat=SimpleNamespace(BGR="BGR"))
-        with patch.dict("sys.modules", pyvirtualcam=module):
+        with patch.dict("sys.modules", pyvirtualcam=module), patch("builtins.print"):
             self.assertIs(app.open_virtual_camera(arguments(), 640, 480), camera)
         module.Camera.assert_called_once_with(
             width=640, height=480, fps=30.0, fmt="BGR", backend=None, device=None,
@@ -61,65 +62,131 @@ class VirtualCameraTests(unittest.TestCase):
         self.assertTrue((sent == 42).all())
 
 
+def run_mock_video(test, frames, times, keys, joined=False, send_error=None,
+                   remembered=None, hotkey_actions=()):
+    """Drive run() with fake devices; returns (virtual camera, shown frames, mocks)."""
+    saved = {}  # Fake background library: path -> image.
+    if remembered is not None:
+        saved[Path("ricordato.png")] = remembered
+
+    def save_capture(image):
+        saved[Path("cattura.png")] = image
+        return Path("cattura.png")
+
+    hotkeys = Mock()
+    hotkeys.poll.side_effect = [list(hotkey_actions)] + [[]] * len(frames)
+    panel = Mock()
+    panel.poll.return_value = None
+    capture = Mock()
+    capture.read.side_effect = [(True, frame) for frame in frames]
+    height, width = frames[0].shape[:2]
+    segmenter, hands, sound = Mock(), Mock(), Mock()
+    hands.detect_for_video.return_value = SimpleNamespace(hand_landmarks=[])
+    camera = Mock(width=width, height=height)
+    camera.send.side_effect = send_error
+    shown = []
+    with ExitStack() as mocks:
+        mocks.enter_context(patch.object(app, "parse_args", return_value=arguments()))
+        mocks.enter_context(patch.object(app, "download_models"))
+        mocks.enter_context(patch.object(app, "open_camera", return_value=capture))
+        mocks.enter_context(patch.object(app, "create_tasks", return_value=(segmenter, hands)))
+        mocks.enter_context(patch.object(app, "VanishSound", return_value=sound))
+        opening = mocks.enter_context(patch.object(app, "open_virtual_camera", return_value=camera))
+        mask = mocks.enter_context(patch.object(
+            app, "person_mask", return_value=np.ones((height, width), np.float32)))
+        mocks.enter_context(patch.object(app, "joined_hands_from_landmarks", return_value=joined))
+        mocks.enter_context(patch.object(app.time, "perf_counter", side_effect=times))
+        mocks.enter_context(patch.object(app, "GlobalHotkeys", return_value=hotkeys))
+        mocks.enter_context(patch.object(app, "BackgroundPanel", return_value=panel))
+        mocks.enter_context(patch.object(app, "list_backgrounds", side_effect=lambda: list(saved)))
+        mocks.enter_context(patch.object(
+            app, "remembered_background", return_value=next(iter(saved), None)))
+        save = mocks.enter_context(patch.object(app, "save_capture", side_effect=save_capture))
+        mocks.enter_context(patch.object(app, "read_image", side_effect=saved.get))
+        remember = mocks.enter_context(patch.object(app, "remember_background"))
+        mocks.enter_context(patch.object(app.cv2, "namedWindow"))
+        mocks.enter_context(patch.object(app.cv2, "resizeWindow"))
+        mocks.enter_context(patch.object(app.cv2, "getWindowProperty", return_value=1))
+        destroy = mocks.enter_context(patch.object(app.cv2, "destroyAllWindows"))
+        mocks.enter_context(patch.object(app.cv2, "imshow", side_effect=lambda name, frame: shown.append(frame.copy())))
+        mocks.enter_context(patch.object(app.cv2, "waitKey", side_effect=keys))
+        mocks.enter_context(patch.object(app.cv2, "putText", side_effect=AssertionError("Overlay vietato")))
+        mocks.enter_context(patch("builtins.print"))
+        if send_error is None:
+            test.assertEqual(app.run(), 0)
+        else:
+            with test.assertRaisesRegex(RuntimeError, "send failed"):
+                app.run()
+        opening.assert_called_once()
+        test.assertEqual(opening.call_args.args[1:], (width, height))
+        capture.release.assert_called_once()
+        segmenter.close.assert_called_once()
+        hands.close.assert_called_once()
+        sound.close.assert_called_once()
+        camera.close.assert_called_once()
+        destroy.assert_called_once()
+        hotkeys.close.assert_called_once()
+    return camera, shown, SimpleNamespace(hands=hands, sound=sound, mask=mask,
+                                          save=save, remember=remember)
+
+
 class VideoLoopTests(unittest.TestCase):
-    def run_mock_video(self, send_error=None, gesture=("No_Hand", 0.0)):
-        capture = Mock()
-        frames = [np.full((24, 40, 3), color, np.uint8) for color in (10, 40, 80, 120, 160)]
-        capture.read.side_effect = [(True, frame) for frame in frames]
-        segmenter, recognizer = Mock(), Mock()
-        camera = Mock(width=40, height=24)
-        camera.send.side_effect = send_error
-        displayed = []
-        with ExitStack() as mocks:
-            mocks.enter_context(patch.object(app, "parse_args", return_value=arguments()))
-            mocks.enter_context(patch.object(app, "download_models"))
-            mocks.enter_context(patch.object(app, "open_camera", return_value=capture))
-            mocks.enter_context(patch.object(app, "create_tasks", return_value=(segmenter, recognizer)))
-            opening = mocks.enter_context(patch.object(app, "open_virtual_camera", return_value=camera))
-            mocks.enter_context(patch.object(app, "person_mask", return_value=np.ones((24, 40), np.float32)))
-            mocks.enter_context(patch.object(app, "recognize_gesture", return_value=gesture))
-            times = (0, 0, 0.1, 4.1, 4.3, 4.35, 5.0, 5.02, 8.2, 8.23)
-            mocks.enter_context(patch.object(app.time, "perf_counter", side_effect=times))
-            mocks.enter_context(patch.object(app.cv2, "namedWindow"))
-            mocks.enter_context(patch.object(app.cv2, "resizeWindow"))
-            destroy = mocks.enter_context(patch.object(app.cv2, "destroyAllWindows"))
-            mocks.enter_context(patch.object(app.cv2, "imshow", side_effect=lambda name, frame: displayed.append(frame.copy())))
-            keys = (0, 0, ord("v") if gesture[0] != "Victory" else 0, 0, ord("q"))
-            mocks.enter_context(patch.object(app.cv2, "waitKey", side_effect=keys))
-            mocks.enter_context(patch.object(app.cv2, "putText", side_effect=AssertionError("Overlay vietato")))
-            mocks.enter_context(patch("builtins.print"))
-            if send_error is None:
-                self.assertEqual(app.run(), 0)
-            else:
-                with self.assertRaisesRegex(RuntimeError, "send failed"):
-                    app.run()
-            opening.assert_called_once()
-            self.assertEqual(opening.call_args.args[1:], (40, 24))
-            capture.release.assert_called_once()
-            segmenter.close.assert_called_once()
-            recognizer.close.assert_called_once()
-            camera.close.assert_called_once()
-            destroy.assert_called_once()
-        return frames, camera, displayed
+    frames = [np.full((24, 40, 3), v, np.uint8) for v in (10, 40, 80, 120, 160)]
 
-    def test_preview_and_virtual_output_are_clean_in_all_phases(self):
-        frames, camera, displayed = self.run_mock_video()
-        self.assertEqual(len(displayed), 5)
-        for sent, preview in zip(camera.send.call_args_list, displayed):
+    def test_preview_and_virtual_output_are_clean_while_ready(self):
+        # start, frame0 countdown, frame1 ends the 3+3 s capture, frames 2-4 ready.
+        times = (0, 0.1, 6.1, 6.3, 6.4, 6.5)
+        camera, shown, mocks = run_mock_video(self, self.frames, times, (0, 0, 0, 0, ord("q")))
+        self.assertEqual(len(shown), 5)
+        for sent, preview in zip(camera.send.call_args_list, shown):
             np.testing.assert_array_equal(sent.args[0], preview)
-        np.testing.assert_array_equal(displayed[0], frames[0])  # Calibrazione.
-        np.testing.assert_array_equal(displayed[2], frames[2])  # Pronto.
-        np.testing.assert_array_equal(displayed[4], frames[1])  # Sparito: solo sfondo.
+        for frame, preview in zip(self.frames, shown):
+            np.testing.assert_array_equal(preview, frame)
+        self.assertEqual(mocks.hands.detect_for_video.call_count, 2)  # 6.4 is throttled.
+        mocks.mask.assert_not_called()  # No segmentation until the effect starts.
+        mocks.sound.play.assert_not_called()
+        mocks.save.assert_called_once()  # Captured background saved and remembered.
+        mocks.remember.assert_called_once_with(Path("cattura.png"))
 
-    def test_first_gesture_starts_dissolve_in_preview_and_virtual_output(self):
-        frames, camera, displayed = self.run_mock_video(gesture=("Victory", 0.9))
-        np.testing.assert_array_equal(camera.send.call_args_list[2].args[0], displayed[2])
-        self.assertTrue(np.any(displayed[3] != frames[3]))  # Animazione in corso.
-        self.assertTrue(np.any(displayed[3] != frames[1]))  # Non ancora sparito.
-        np.testing.assert_array_equal(displayed[4], frames[1])  # Animazione completata.
+    def test_remembered_background_skips_capture_and_hotkey_vanishes(self):
+        remembered = np.full((24, 40, 3), 200, np.uint8)
+        _, shown, mocks = run_mock_video(self, self.frames[:3], (0.1, 0.2, 2.0), (0, 0, ord("q")),
+                                         remembered=remembered, hotkey_actions=["vanish"])
+        mocks.save.assert_not_called()
+        mocks.sound.play.assert_called_once()
+        np.testing.assert_array_equal(shown[0], self.frames[0])
+        self.assertTrue(np.any(shown[2] != self.frames[2]))
+        self.assertTrue(np.any(shown[2] != remembered))  # Background plus log.
+
+    def test_held_joined_hands_play_effect_then_leave_static_log(self):
+        frames = [np.full((24, 40, 3), v, np.uint8) for v in (10, 40, 80, 100, 120, 140, 160)]
+        # frame2 starts the hold, frame3 completes it, frame4 mid-effect, frame5-6 done.
+        times = (0, 0.1, 6.1, 6.3, 6.85, 7.4, 8.5, 8.6)
+        camera, shown, mocks = run_mock_video(
+            self, frames, times, (0, 0, 0, 0, 0, 0, ord("q")), joined=True)
+        self.assertEqual(mocks.hands.detect_for_video.call_count, 2)
+        mocks.sound.play.assert_called_once()
+        background = frames[1]
+        np.testing.assert_array_equal(shown[2], frames[2])
+        np.testing.assert_array_equal(shown[3], frames[3])
+        self.assertTrue(np.any(shown[4] != frames[4]))
+        self.assertTrue(np.any(shown[4] != background))
+        self.assertTrue(np.any(shown[5] != background))  # Tronco persistente.
+        np.testing.assert_array_equal(shown[6], shown[5])
+        self.assertEqual(mocks.mask.call_count, 1)  # Only for the anchor; fade already over.
+        for sent, preview in zip(camera.send.call_args_list, shown):
+            np.testing.assert_array_equal(sent.args[0], preview)
+
+    def test_v_key_starts_effect_and_r_brings_person_back(self):
+        times = (0, 0.1, 6.1, 6.3, 8.0, 8.1)
+        keys = (0, 0, ord("v"), ord("r"), ord("q"))
+        _, shown, mocks = run_mock_video(self, self.frames, times, keys)
+        mocks.sound.play.assert_called_once()
+        self.assertTrue(np.any(shown[3] != self.frames[3]))
+        np.testing.assert_array_equal(shown[4], self.frames[4])
 
     def test_all_devices_close_on_send_error(self):
-        self.run_mock_video(send_error=RuntimeError("send failed"))
+        run_mock_video(self, self.frames, (0, 0.1), (0,), send_error=RuntimeError("send failed"))
 
 
 if __name__ == "__main__":

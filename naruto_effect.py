@@ -10,6 +10,8 @@ import numpy as np
 
 
 EFFECT_SECONDS = 1.45
+PERSON_FADE_SECONDS = 0.13
+LOG_MAX_HEIGHT = 720  # The source sprite is far larger than any on-screen log.
 LOG_PATH = Path(__file__).resolve().parent / "assets" / "substitution_log.png"
 
 
@@ -57,7 +59,18 @@ def load_log() -> np.ndarray:
     sprite = cv2.imread(str(LOG_PATH), cv2.IMREAD_UNCHANGED)
     if sprite is None or sprite.ndim != 3 or sprite.shape[2] != 4:
         raise RuntimeError(f"Sprite del tronco non disponibile: {LOG_PATH}")
+    if sprite.shape[0] > LOG_MAX_HEIGHT:
+        width = round(sprite.shape[1] * LOG_MAX_HEIGHT / sprite.shape[0])
+        sprite = cv2.resize(sprite, (width, LOG_MAX_HEIGHT), interpolation=cv2.INTER_AREA)
     return sprite
+
+
+def _blend(destination: np.ndarray, color: np.ndarray, alpha: np.ndarray) -> None:
+    """In-place alpha blend; callers pass only the region that changes."""
+    destination[:] = (
+        color.astype(np.float32) * alpha
+        + destination.astype(np.float32) * (1.0 - alpha)
+    ).astype(np.uint8)
 
 
 def overlay_log(frame: np.ndarray, sprite: np.ndarray, anchor: tuple[int, int, int],
@@ -76,12 +89,7 @@ def overlay_log(frame: np.ndarray, sprite: np.ndarray, anchor: tuple[int, int, i
         return
     part = sized[top - y1:bottom - y1, left - x1:right - x1]
     alpha = (part[:, :, 3:4].astype(np.float32) / 255.0) * opacity
-    destination = frame[top:bottom, left:right]
-    destination[:] = np.clip(
-        part[:, :, :3].astype(np.float32) * alpha
-        + destination.astype(np.float32) * (1.0 - alpha),
-        0, 255,
-    ).astype(np.uint8)
+    _blend(frame[top:bottom, left:right], part[:, :, :3], alpha)
 
 
 def landed_log_anchor(anchor: tuple[int, int, int], frame_height: int) -> tuple[int, int, int]:
@@ -134,26 +142,27 @@ def _smoke_layer(frame: np.ndarray, anchor: tuple[int, int, int],
                 max(2, int(size * (0.09 + age * 0.12))))
         cv2.ellipse(layer, center, axes, direction * 15, 20, 230,
                     (244, 247, 245, 220), max(2, int(size * 0.025)), cv2.LINE_AA)
-    alpha = (layer[:, :, 3:4].astype(np.float32) / 255.0) * reveal * fade
-    frame[:] = np.clip(
-        layer[:, :, :3].astype(np.float32) * alpha
-        + frame.astype(np.float32) * (1.0 - alpha),
-        0, 255,
-    ).astype(np.uint8)
+    # Blend only the smoke's bounding box, not the whole frame.
+    x, y, w, h = cv2.boundingRect(layer[:, :, 3])
+    if w == 0 or h == 0:
+        return
+    region = layer[y:y + h, x:x + w]
+    alpha = (region[:, :, 3:4].astype(np.float32) / 255.0) * (reveal * fade)
+    _blend(frame[y:y + h, x:x + w], region[:, :, :3], alpha)
 
 
-def render_substitution(frame: np.ndarray, background: np.ndarray, mask: np.ndarray,
+def render_substitution(frame: np.ndarray, background: np.ndarray, mask: np.ndarray | None,
                         sprite: np.ndarray, anchor: tuple[int, int, int], age: float) -> np.ndarray:
-    """Quick body replacement, expanding smoke, then a persistent wooden log."""
+    """Quick body replacement, expanding smoke, then a persistent wooden log.
+
+    `mask` is only needed while the person fades out (age < PERSON_FADE_SECONDS).
+    """
+    output = background.copy()
+    if mask is not None and age < PERSON_FADE_SECONDS:
+        _blend(output, frame, (mask * (1.0 - age / PERSON_FADE_SECONDS))[:, :, None])
     if age >= EFFECT_SECONDS:
-        output = background.copy()
         overlay_log(output, sprite, landed_log_anchor(anchor, output.shape[0]))
         return output
-    person_alpha = mask * max(0.0, 1.0 - age / 0.13)
-    output = (
-        frame.astype(np.float32) * person_alpha[:, :, None]
-        + background.astype(np.float32) * (1.0 - person_alpha[:, :, None])
-    ).astype(np.uint8)
     _smoke_layer(output, anchor, age, foreground=False)
     log_opacity = min(1.0, max(0.0, (age - 0.05) / 0.15))
     moving_anchor = falling_log_anchor(anchor, output.shape[0], age)
