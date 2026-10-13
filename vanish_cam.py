@@ -22,12 +22,13 @@ from mediapipe.tasks.python import vision
 
 from backgrounds import (
     BackgroundPanel, fit_background, import_image, list_backgrounds, pick_image_file,
-    read_image, remember_background, remembered_background, save_capture,
+    load_settings, read_image, remember_background, remembered_background, save_capture,
+    save_settings,
 )
 from global_hotkeys import GlobalHotkeys
 from hand_debug import HandDebugView
 from naruto_effect import (
-    EFFECT_SECONDS, PERSON_FADE_SECONDS, hand_points, joined_hands_check,
+    EFFECT_SECONDS, PERSON_FADE_SECONDS, composite_person, hand_points, joined_hands_check,
     load_log, render_substitution, substitution_anchor,
 )
 from vanish_sound import SOUND_PATH, VanishSound
@@ -321,6 +322,8 @@ class NarutoVanish:
         self.sprite = sprite
         self.on_captured = on_captured
         self.debug_view = None  # HandDebugView while debug mode is on.
+        self.permanent = False  # Virtual background while visible (costs segmentation per frame).
+        self.smoothed_mask: np.ndarray | None = None
         self.phase = "waiting"  # No background yet.
         self.phase_started = 0.0
         self.now = 0.0
@@ -389,28 +392,17 @@ class NarutoVanish:
         if self.phase == "waiting":
             return frame
         if self.phase == "ready":
-            debug = self.debug_view
-            if debug is not None and debug.frozen:
-                # Waiting for the SI/NO answer: pause detection and the hold timer.
-                self.joined_since = None
+            self._watch_hands(frame, now)  # Always on the real camera image.
+            if not self.permanent:
                 return frame
-            self.watcher.submit(frame, now)
-            result = self.watcher.take_result()
-            if result is None:
-                return frame
-            hold = self._hold_progress(result)
-            if debug is not None:
-                debug.update(result, hold)
-            # Fire only on a frame that is itself recognized, not on one that
-            # merely falls inside the grace period after the last recognized frame.
-            if hold >= 1.0 and result.joined:
-                if debug is not None:
-                    # Debug mode never plays the effect: freeze and ask instead.
-                    debug.freeze("rilevato")
-                    self.joined_since = None
-                else:
-                    self.vanish(frame, now)
-            return frame
+            # Virtual background: person cut out over the chosen background,
+            # so the vanish shows exactly the same scene without the person.
+            mask = person_mask(self.segmenter, frame)
+            if self.smoothed_mask is not None and self.smoothed_mask.shape == mask.shape:
+                # Light temporal smoothing hides frame-to-frame edge flicker.
+                mask = cv2.addWeighted(mask, 0.65, self.smoothed_mask, 0.35, 0)
+            self.smoothed_mask = mask
+            return composite_person(frame, self.background, mask)
         if self.vanished_frame is None:  # Vanishing, or vanished but needs a redraw.
             mask = person_mask(self.segmenter, frame) if age < PERSON_FADE_SECONDS else None
             output = render_substitution(frame, self.background, mask,
@@ -434,6 +426,29 @@ class NarutoVanish:
             self.set_background(background)
             if self.on_captured is not None:
                 self.on_captured(background)
+
+    def _watch_hands(self, frame: np.ndarray, now: float) -> None:
+        debug = self.debug_view
+        if debug is not None and debug.frozen:
+            # Waiting for the SI/NO answer: pause detection and the hold timer.
+            self.joined_since = None
+            return
+        self.watcher.submit(frame, now)
+        result = self.watcher.take_result()
+        if result is None:
+            return
+        hold = self._hold_progress(result)
+        if debug is not None:
+            debug.update(result, hold)
+        # Fire only on a frame that is itself recognized, not on one that
+        # merely falls inside the grace period after the last recognized frame.
+        if hold >= 1.0 and result.joined:
+            if debug is not None:
+                # Debug mode never plays the effect: freeze and ask instead.
+                debug.freeze("rilevato")
+                self.joined_since = None
+            else:
+                self.vanish(frame, now)
 
     def _hold_progress(self, result: HandResult) -> float:
         """Update the hold timer (by frame time); 1.0 means the gesture fires."""
@@ -480,6 +495,7 @@ KEY_ACTIONS = {  # While an app window is focused; see global_hotkeys for the re
     ord(" "): "capture", ord("b"): "capture", ord("u"): "upload",
     ord("r"): "reappear", ord("v"): "vanish", ord("f"): "fullscreen", ord("d"): "debug",
     ord("s"): "answer_yes", ord("n"): "answer_no",  # Debug mani: SI / NO.
+    ord("p"): "permanent",
 }
 
 
@@ -523,6 +539,7 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
         files = list_backgrounds()
 
     app = NarutoVanish(segmenter, watcher, sound, load_log(), on_captured=captured)
+    app.permanent = load_settings().get("permanent") is True
     if args.debug:
         app.debug_view = HandDebugView()
     if selected is not None:
@@ -530,7 +547,7 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
     if app.background is None:
         selected = None
         app.capture_background(time.perf_counter())
-    print("[Webcam] Tasti nella finestra: B/SPAZIO cattura sfondo, U carica immagine, "
+    print("[Webcam] Tasti nella finestra: B/SPAZIO cattura sfondo, U carica immagine, P sfondo fisso, "
           "R riappari, V svanisci, D debug mani, F fullscreen, Q esci.")
     virtual_camera = None
     first_frame = True
@@ -559,7 +576,7 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
         if status != last_status:
             print(f"[Webcam] {status}")
             last_status = status
-        panel.show(files, selected, status)
+        panel.show(files, selected, status, app.permanent)
         if app.debug_view is not None:
             app.debug_view.tick(now)
 
@@ -590,6 +607,11 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
                     files = list_backgrounds()
             elif action in ("answer_yes", "answer_no") and app.debug_view is not None:
                 app.debug_view.answer(action == "answer_yes")
+            elif action == "permanent":
+                app.permanent = not app.permanent
+                app.smoothed_mask = None
+                save_settings(permanent=app.permanent)
+                print(f"[Sfondi] Sfondo fisso {'attivo' if app.permanent else 'disattivato'}.")
             elif action == "debug":
                 if app.debug_view is None:
                     app.debug_view = HandDebugView()

@@ -114,6 +114,18 @@ class StateMachineTests(unittest.TestCase):
         self.run_frames(vanish, (1.3125,))
         self.assertEqual(vanish.phase, "vanishing")
 
+    def test_permanent_background_cuts_out_the_person_while_ready(self):
+        vanish = self.make_app(False)
+        mask = np.zeros((480, 640), np.float32)
+        mask[:, :320] = 1.0  # Person on the left half.
+        with patch.object(app, "person_mask", return_value=mask) as segment:
+            np.testing.assert_array_equal(vanish.process(self.frame, 1.0), self.frame)
+            segment.assert_not_called()  # Off by default: no per-frame segmentation.
+            vanish.permanent = True
+            shown = vanish.process(self.frame, 1.1)
+        self.assertEqual(int(shown[0, 0, 0]), 90)   # Person kept from the camera.
+        self.assertEqual(int(shown[0, -1, 0]), 0)   # Background elsewhere.
+
     def test_vanished_frame_is_computed_once(self):
         vanish = self.make_app(False)
         with patch.object(app, "person_mask", return_value=np.zeros((480, 640), np.float32)):

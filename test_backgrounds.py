@@ -44,6 +44,16 @@ class BackgroundLibraryTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             backgrounds.import_image(self.folder / "broken.png")
 
+    def test_settings_are_merged_and_survive_a_broken_file(self):
+        path = backgrounds.save_capture(np.zeros((8, 8, 3), np.uint8))
+        backgrounds.remember_background(path)
+        backgrounds.save_settings(permanent=True)
+        self.assertEqual(backgrounds.load_settings(), {"background": path.name, "permanent": True})
+        self.assertEqual(backgrounds.remembered_background(), path)
+        backgrounds.SETTINGS_PATH.write_text("{not json", encoding="utf-8")
+        self.assertEqual(backgrounds.load_settings(), {})
+        self.assertIsNone(backgrounds.remembered_background())
+
     def test_fit_background_covers_frame_without_distortion(self):
         image = np.zeros((100, 400, 3), np.uint8)
         image[:, 150:250] = 255  # Centre stripe must stay centred.

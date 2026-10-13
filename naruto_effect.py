@@ -190,6 +190,12 @@ def _smoke_layer(frame: np.ndarray, anchor: tuple[int, int, int],
     _blend(frame[y:y + h, x:x + w], region[:, :, :3], alpha)
 
 
+def composite_person(frame: np.ndarray, background: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Person (mask 1) over the background (mask 0), like a video-call virtual background."""
+    alpha = np.ascontiguousarray(mask, dtype=np.float32)
+    return cv2.blendLinear(frame, background, alpha, 1.0 - alpha)
+
+
 def render_substitution(frame: np.ndarray, background: np.ndarray, mask: np.ndarray | None,
                         sprite: np.ndarray, anchor: tuple[int, int, int], age: float) -> np.ndarray:
     """Quick body replacement, expanding smoke, then a persistent wooden log.

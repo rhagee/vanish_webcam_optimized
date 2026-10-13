@@ -33,6 +33,10 @@ Accanto all'anteprima si apre la finestra **Sfondi**:
 - **Carica immagine**: scegli una qualsiasi immagine (PNG, JPG, BMP, WEBP);
   viene copiata nella libreria e adattata alla risoluzione della webcam.
 - Clicca una miniatura per usarla. La scelta viene ricordata alla riapertura.
+- **Sfondo fisso** (`P`): come lo sfondo virtuale di Google Meet, mentre sei
+  visibile vieni ritagliato e mostrato sopra lo sfondo scelto, così la
+  sparizione è perfettamente coerente anche con un'immagine caricata. Costa
+  qualche millisecondo per fotogramma; la scelta viene ricordata.
 
 Gli sfondi sono salvati nella cartella `backgrounds/` e la scelta in
 `settings.json`, accanto al programma.
@@ -50,6 +54,7 @@ Con la finestra dell'anteprima in primo piano:
 
 - `B` oppure `SPAZIO`: cattura un nuovo sfondo.
 - `U`: carica un'immagine come sfondo.
+- `P`: attiva o disattiva lo sfondo fisso.
 - `R` / `V`: riappari / svanisci.
 - `D`: apre o chiude la finestra **Debug mani**.
 - `F`: attiva o disattiva lo schermo intero.

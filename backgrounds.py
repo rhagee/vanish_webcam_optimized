@@ -90,20 +90,32 @@ def pick_image_file() -> Path | None:
     return Path(name) if name else None
 
 
-def remembered_background() -> Path | None:
+def load_settings() -> dict:
     try:
-        name = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))["background"]
-    except (OSError, ValueError, KeyError, TypeError):
+        settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def save_settings(**changes) -> None:
+    """Merge `changes` into settings.json (background, permanent, ...)."""
+    try:
+        SETTINGS_PATH.write_text(json.dumps({**load_settings(), **changes}), encoding="utf-8")
+    except OSError as error:
+        print(f"[Sfondi] Impossibile salvare le impostazioni: {error}")
+
+
+def remembered_background() -> Path | None:
+    name = load_settings().get("background")
+    if not isinstance(name, str):
         return None
     path = BACKGROUND_DIR / Path(name).name
     return path if path.is_file() else None
 
 
 def remember_background(path: Path) -> None:
-    try:
-        SETTINGS_PATH.write_text(json.dumps({"background": path.name}), encoding="utf-8")
-    except OSError as error:
-        print(f"[Sfondi] Impossibile salvare la scelta: {error}")
+    save_settings(background=path.name)
 
 
 def fit_background(image: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -131,8 +143,9 @@ class BackgroundPanel:
     COLUMNS = 4
     MAX_THUMBS = 16
     GAP = 12
-    BUTTONS = (("capture", "Cattura sfondo  [B]", 20), ("upload", "Carica immagine  [U]", 370))
-    BUTTON_TOP, BUTTON_HEIGHT, BUTTON_WIDTH = 16, 52, 330
+    BUTTONS = (("capture", "Cattura sfondo [B]", 12), ("upload", "Carica immagine [U]", 250),
+               ("permanent", "Sfondo fisso: {} [P]", 488))
+    BUTTON_TOP, BUTTON_HEIGHT, BUTTON_WIDTH = 16, 52, 220
     GRID_TOP = 110
 
     def __init__(self):
@@ -171,10 +184,11 @@ class BackgroundPanel:
             self.thumbs[path] = cached
         return cached[1]
 
-    def show(self, files: list[Path], selected: Path | None, status: str) -> None:
+    def show(self, files: list[Path], selected: Path | None, status: str,
+             permanent: bool = False) -> None:
         """Redraw only when something visible changed."""
         files = files[:self.MAX_THUMBS]
-        state = (tuple(files), selected, status)
+        state = (tuple(files), selected, status, permanent)
         if state == self.drawn_state:
             return
         self.drawn_state = state
@@ -182,12 +196,13 @@ class BackgroundPanel:
         height = self.GRID_TOP + rows * (self.THUMB[1] + self.GAP) + self.GAP
         canvas = np.full((height, self.WIDTH, 3), (34, 29, 26), np.uint8)
         top = self.BUTTON_TOP
-        for _, label, left in self.BUTTONS:
+        for action, label, left in self.BUTTONS:
             corner = (left + self.BUTTON_WIDTH, top + self.BUTTON_HEIGHT)
-            cv2.rectangle(canvas, (left, top), corner, (62, 54, 48), -1)
+            active = action == "permanent" and permanent
+            cv2.rectangle(canvas, (left, top), corner, (60, 140, 60) if active else (62, 54, 48), -1)
             cv2.rectangle(canvas, (left, top), corner, (153, 142, 111), 2)
-            cv2.putText(canvas, label, (left + 18, top + 34), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.65, (247, 245, 240), 2, cv2.LINE_AA)
+            cv2.putText(canvas, label.format("ON" if permanent else "OFF"), (left + 12, top + 33),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (247, 245, 240), 2, cv2.LINE_AA)
         cv2.putText(canvas, status, (20, 94), cv2.FONT_HERSHEY_SIMPLEX,
                     0.5, (201, 195, 179), 1, cv2.LINE_AA)
         if not files:

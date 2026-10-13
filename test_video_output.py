@@ -64,7 +64,7 @@ class VirtualCameraTests(unittest.TestCase):
 
 
 def run_mock_video(test, frames, times, keys, joined=False, send_error=None,
-                   remembered=None, hotkey_actions=()):
+                   remembered=None, hotkey_actions=(), settings=None, person=1.0):
     """Drive run() with fake devices; returns (virtual camera, shown frames, mocks)."""
     saved = {}  # Fake background library: path -> image.
     if remembered is not None:
@@ -95,7 +95,7 @@ def run_mock_video(test, frames, times, keys, joined=False, send_error=None,
         mocks.enter_context(patch.object(app, "VanishSound", return_value=sound))
         opening = mocks.enter_context(patch.object(app, "open_virtual_camera", return_value=camera))
         mask = mocks.enter_context(patch.object(
-            app, "person_mask", return_value=np.ones((height, width), np.float32)))
+            app, "person_mask", return_value=np.full((height, width), person, np.float32)))
         mocks.enter_context(patch.object(app.time, "perf_counter", side_effect=times))
         mocks.enter_context(patch.object(app, "GlobalHotkeys", return_value=hotkeys))
         mocks.enter_context(patch.object(app, "BackgroundPanel", return_value=panel))
@@ -105,6 +105,8 @@ def run_mock_video(test, frames, times, keys, joined=False, send_error=None,
         save = mocks.enter_context(patch.object(app, "save_capture", side_effect=save_capture))
         mocks.enter_context(patch.object(app, "read_image", side_effect=saved.get))
         remember = mocks.enter_context(patch.object(app, "remember_background"))
+        mocks.enter_context(patch.object(app, "load_settings", return_value=dict(settings or {})))
+        save_settings = mocks.enter_context(patch.object(app, "save_settings"))
         mocks.enter_context(patch.object(app.cv2, "namedWindow"))
         mocks.enter_context(patch.object(app.cv2, "resizeWindow"))
         mocks.enter_context(patch.object(app.cv2, "getWindowProperty", return_value=1))
@@ -130,7 +132,8 @@ def run_mock_video(test, frames, times, keys, joined=False, send_error=None,
         destroy.assert_called_once()
         hotkeys.close.assert_called_once()
     return camera, shown, SimpleNamespace(watcher=watcher, sound=sound, mask=mask,
-                                          save=save, remember=remember)
+                                          save=save, remember=remember,
+                                          save_settings=save_settings)
 
 
 class VideoLoopTests(unittest.TestCase):
@@ -187,6 +190,15 @@ class VideoLoopTests(unittest.TestCase):
         mocks.sound.play.assert_called_once()
         self.assertTrue(np.any(shown[3] != self.frames[3]))
         np.testing.assert_array_equal(shown[4], self.frames[4])
+
+    def test_permanent_background_is_remembered_and_p_key_toggles_it(self):
+        remembered = np.full((24, 40, 3), 200, np.uint8)
+        _, shown, mocks = run_mock_video(
+            self, self.frames[:3], (0.1, 0.2, 0.3, 0.4), (ord("p"), 0, ord("q")),
+            remembered=remembered, settings={"permanent": True}, person=0.0)
+        np.testing.assert_array_equal(shown[0], remembered)  # Person mask empty: only background.
+        mocks.save_settings.assert_called_once_with(permanent=False)
+        np.testing.assert_array_equal(shown[1], self.frames[1])  # Toggled off: raw camera.
 
     def test_all_devices_close_on_send_error(self):
         run_mock_video(self, self.frames, (0, 0.1), (0,), send_error=RuntimeError("send failed"))
