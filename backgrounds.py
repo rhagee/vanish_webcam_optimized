@@ -1,4 +1,4 @@
-"""Saved background library, remembered selection and the "Sfondi" control window."""
+"""Saved background library, remembered selection and the "Backgrounds" control window."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ DATA_DIR = (Path(sys.executable).parent if getattr(sys, "frozen", False)
 BACKGROUND_DIR = DATA_DIR / "backgrounds"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
-PANEL_NAME = "Sfondi"
+PANEL_NAME = "Backgrounds"
 
 
 def read_image(path: Path) -> np.ndarray | None:
@@ -49,10 +49,10 @@ def _new_path(prefix: str, suffix: str) -> Path:
 
 
 def save_capture(image: np.ndarray) -> Path:
-    path = _new_path("cattura", ".png")
+    path = _new_path("capture", ".png")
     ok, data = cv2.imencode(".png", image)
     if not ok:
-        raise RuntimeError("Impossibile salvare lo sfondo catturato.")
+        raise RuntimeError("Could not save the captured background.")
     data.tofile(str(path))
     return path
 
@@ -61,13 +61,13 @@ def import_image(source: Path) -> Path:
     """Copy a user image into the library (re-encoded as PNG if not PNG/JPG)."""
     image = read_image(source)
     if image is None:
-        raise RuntimeError(f"Immagine non leggibile: {source}")
+        raise RuntimeError(f"Unreadable image: {source}")
     suffix = source.suffix.lower()
     if suffix in IMAGE_SUFFIXES:
-        path = _new_path("immagine", suffix)
+        path = _new_path("image", suffix)
         shutil.copyfile(source, path)
     else:
-        path = _new_path("immagine", ".png")
+        path = _new_path("image", ".png")
         cv2.imencode(".png", image)[1].tofile(str(path))
     return path
 
@@ -82,8 +82,8 @@ def pick_image_file() -> Path | None:
     root.attributes("-topmost", True)
     try:
         name = filedialog.askopenfilename(
-            parent=root, title="Scegli un'immagine di sfondo",
-            filetypes=[("Immagini", "*.png *.jpg *.jpeg *.bmp *.webp"), ("Tutti i file", "*.*")],
+            parent=root, title="Choose a background image",
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.webp"), ("All files", "*.*")],
         )
     finally:
         root.destroy()
@@ -103,7 +103,7 @@ def save_settings(**changes) -> None:
     try:
         SETTINGS_PATH.write_text(json.dumps({**load_settings(), **changes}), encoding="utf-8")
     except OSError as error:
-        print(f"[Sfondi] Impossibile salvare le impostazioni: {error}")
+        print(f"[Backgrounds] Could not save settings: {error}")
 
 
 def remembered_background() -> Path | None:
@@ -143,8 +143,8 @@ class BackgroundPanel:
     COLUMNS = 4
     MAX_THUMBS = 16
     GAP = 12
-    BUTTONS = (("capture", "Cattura sfondo [B]", 12), ("upload", "Carica immagine [U]", 250),
-               ("permanent", "Sfondo fisso: {} [P]", 488))
+    BUTTONS = (("capture", "Capture background [B]", 12), ("upload", "Upload image [U]", 250),
+               ("permanent", "Fixed bg: {} [P]", 488))
     BUTTON_TOP, BUTTON_HEIGHT, BUTTON_WIDTH = 16, 52, 220
     GRID_TOP = 110
 
@@ -206,7 +206,7 @@ class BackgroundPanel:
         cv2.putText(canvas, status, (20, 94), cv2.FONT_HERSHEY_SIMPLEX,
                     0.5, (201, 195, 179), 1, cv2.LINE_AA)
         if not files:
-            cv2.putText(canvas, "Nessuno sfondo salvato.", (20, self.GRID_TOP + 50),
+            cv2.putText(canvas, "No saved backgrounds.", (20, self.GRID_TOP + 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (150, 150, 150), 1, cv2.LINE_AA)
         self.cells = []
         for index, path in enumerate(files):

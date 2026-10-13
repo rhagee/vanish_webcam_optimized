@@ -1,4 +1,4 @@
-"""Webcam locale: Naruto Vanish avviato unendo i palmi davanti alla webcam."""
+"""Local webcam: Naruto Vanish triggered by joining your palms in front of the webcam."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from vanish_sound import SOUND_PATH, VanishSound
 
 APP_DIR = Path(__file__).resolve().parent
 MODEL_DIR = APP_DIR / "models"
-WINDOW_NAME = "Webcam - Anteprima"
+WINDOW_NAME = "Webcam - Preview"
 
 SEGMENTER_MODEL = MODEL_DIR / "selfie_segmenter_landscape.tflite"
 SEGMENTER_URL = (
@@ -57,34 +57,34 @@ HAND_CROP = (0.18, 1.0, 0.12, 0.88)  # top, bottom, left, right (fractions)
 def positive_fps(value: str) -> float:
     fps = float(value)
     if not np.isfinite(fps) or not 1 <= fps <= 120:
-        raise argparse.ArgumentTypeError("Gli FPS devono essere compresi tra 1 e 120.")
+        raise argparse.ArgumentTypeError("FPS must be between 1 and 120.")
     return fps
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Naruto Vanish per la webcam.")
-    parser.add_argument("--camera", type=int, default=0, help="Indice della webcam")
-    parser.add_argument("--width", type=int, default=960, help="Larghezza video")
-    parser.add_argument("--height", type=int, default=540, help="Altezza video")
+    parser = argparse.ArgumentParser(description="Naruto Vanish for your webcam.")
+    parser.add_argument("--camera", type=int, default=0, help="Webcam index")
+    parser.add_argument("--width", type=int, default=960, help="Video width")
+    parser.add_argument("--height", type=int, default=540, help="Video height")
     parser.add_argument(
-        "--fullscreen", action="store_true", help="Avvia a schermo intero"
+        "--fullscreen", action="store_true", help="Start in fullscreen"
     )
     parser.add_argument(
-        "--no-mirror", action="store_true", help="Non specchiare la webcam"
+        "--no-mirror", action="store_true", help="Do not mirror the webcam"
     )
-    parser.add_argument("--fps", type=positive_fps, default=30.0, help="FPS della webcam e dell'uscita virtuale (default: 30)")
+    parser.add_argument("--fps", type=positive_fps, default=30.0, help="Webcam and virtual output FPS (default: 30)")
     parser.add_argument(
         "--virtual-camera", action=argparse.BooleanOptionalAction, default=None,
-        help="Richiede la webcam virtuale; per default si attiva se disponibile. --no-virtual-camera la disattiva",
+        help="Require the virtual webcam; by default it is enabled when available. --no-virtual-camera disables it",
     )
     parser.add_argument(
         "--virtual-backend", choices=("obs", "unitycapture", "v4l2loopback"),
-        help="Driver della webcam virtuale da usare",
+        help="Virtual webcam driver to use",
     )
-    parser.add_argument("--virtual-device", help="Nome del dispositivo virtuale da usare")
+    parser.add_argument("--virtual-device", help="Name of the virtual device to use")
     parser.add_argument(
         "--debug", "--gesture-debug", dest="debug", action="store_true",
-        help="Apre la finestra Debug mani (tasto D) per vedere ed etichettare il riconoscimento",
+        help="Open the Hand debug window (D key) to inspect and label recognition",
     )
     parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -103,17 +103,17 @@ def open_virtual_camera(args: argparse.Namespace, width: int, height: int):
         )
     except (ImportError, RuntimeError, OSError, ValueError) as error:
         message = (
-            "Webcam virtuale non disponibile. Installa OBS Studio (con il driver "
-            "OBS Virtual Camera) oppure Unity Capture. Se usi OBS Virtual Camera, "
-            "ferma 'Avvia fotocamera virtuale' in OBS. "
-            "Avvia da AVVIA_LOCALE.bat per installare pyvirtualcam. "
-            f"Dettaglio: {error}"
+            "Virtual webcam not available. Install OBS Studio (with the "
+            "OBS Virtual Camera driver) or Unity Capture. If you use OBS Virtual Camera, "
+            "stop 'Start Virtual Camera' in OBS. "
+            "Launch via START.bat to install pyvirtualcam. "
+            f"Details: {error}"
         )
         if args.virtual_camera is True or args.virtual_backend or args.virtual_device:
             raise RuntimeError(message) from error
-        print(f"[Webcam] {message}\n[Webcam] Proseguo con l'anteprima locale.")
+        print(f"[Webcam] {message}\n[Webcam] Continuing with the local preview only.")
         return None
-    print(f"[Webcam] Uscita virtuale attiva: {camera.device} ({width}x{height}, {args.fps:g} FPS)")
+    print(f"[Webcam] Virtual output active: {camera.device} ({width}x{height}, {args.fps:g} FPS)")
     return camera
 
 
@@ -128,7 +128,7 @@ def download_models() -> None:
         return
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     temporary = SEGMENTER_MODEL.with_suffix(SEGMENTER_MODEL.suffix + ".part")
-    print(f"[Vanish Lab] Scarico {SEGMENTER_MODEL.name}...")
+    print(f"[Vanish Lab] Downloading {SEGMENTER_MODEL.name}...")
     try:
         request = urllib.request.Request(SEGMENTER_URL, headers={"User-Agent": "Vanish-Lab/1.0"})
         with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as output:
@@ -138,8 +138,8 @@ def download_models() -> None:
     except (OSError, urllib.error.URLError) as error:
         temporary.unlink(missing_ok=True)
         raise RuntimeError(
-            "Non riesco a scaricare il modello MediaPipe. "
-            "Controlla la connessione internet e riprova."
+            "Could not download the MediaPipe model. "
+            "Check your internet connection and try again."
         ) from error
 
 
@@ -154,7 +154,7 @@ def open_camera(index: int, width: int, height: int, fps: float) -> cv2.VideoCap
 
     if not capture.isOpened():
         raise RuntimeError(
-            f"Webcam {index} non disponibile. Chiudi le altre app oppure prova --camera 1."
+            f"Webcam {index} not available. Close other apps using it or try --camera 1."
         )
 
     # Without MJPG many USB webcams fall back to raw YUY2, which caps
@@ -170,7 +170,7 @@ def open_camera(index: int, width: int, height: int, fps: float) -> cv2.VideoCap
 def create_tasks() -> tuple[vision.ImageSegmenter, vision.HandLandmarker, vision.HandLandmarker]:
     """Segmenter, tracking hand model (VIDEO) and zoomed-crop hand model (IMAGE)."""
     if not HAND_MODEL.is_file():
-        raise RuntimeError(f"Modello delle mani non trovato: {HAND_MODEL}")
+        raise RuntimeError(f"Hand model not found: {HAND_MODEL}")
     with ExitStack() as cleanup:
         # The segmenter only runs for a handful of frames per vanish, so IMAGE mode.
         segmenter = vision.ImageSegmenter.create_from_options(vision.ImageSegmenterOptions(
@@ -270,7 +270,7 @@ class HandWatcher:
         found = hand_points(
             self.hands.detect_for_video(to_mp_image(frame), timestamp_ms).hand_landmarks,
             width, height)
-        passes = [HandPass("intera", (0, 0, width, height), found,
+        passes = [HandPass("full", (0, 0, width, height), found,
                            joined_hands_check(found, width, height))]
         if not passes[0].check["joined"] and self.zoomed_hands is not None:
             # Pressed-together palms are small and easy to miss in the full frame.
@@ -301,7 +301,7 @@ class HandWatcher:
             try:
                 result = self.detect(frame, now)
             except Exception as error:  # Keep watching; one bad frame must not stop it.
-                print(f"[Mani] Errore di riconoscimento: {error}")
+                print(f"[Hands] Recognition error: {error}")
                 continue
             with self.lock:
                 self.result = result
@@ -360,23 +360,23 @@ class NarutoVanish:
         self.sound.play()
 
     def status(self) -> str:
-        """One-line state for the terminal and the Sfondi window (never the video)."""
+        """One-line state for the terminal and the Backgrounds window (never the video)."""
         if self.phase == "capturing":
             elapsed = self.now - self.phase_started
             if elapsed < CAPTURE_DELAY_SECONDS:
                 left = int(np.ceil(CAPTURE_DELAY_SECONDS - elapsed))
-                return f"Esci dall'inquadratura: cattura dello sfondo tra {left} s"
+                return f"Step out of the frame: background capture in {left} s"
             left = int(np.ceil(CAPTURE_DELAY_SECONDS + CAPTURE_SECONDS - elapsed))
-            return f"Cattura dello sfondo in corso... {left} s"
+            return f"Capturing background... {left} s"
         if self.phase == "waiting":
-            return "Nessuno sfondo: premi Cattura sfondo o scegline uno"
+            return "No background: press Capture background or pick one"
         if self.phase == "ready" and self.debug_view is not None:
             if self.debug_view.frozen:
-                return "Debug: era la posa Naruto? Rispondi SI / NO (tasti S / N)"
-            return "Debug: l'effetto non parte, la finestra Debug mani chiede SI / NO"
+                return "Debug: was it the Naruto pose? Answer YES / NO (keys Y / N)"
+            return "Debug: effect disabled, the Hand debug window asks YES / NO"
         if self.phase == "ready":
-            return "Pronto: unisci i palmi per svanire"
-        return "Sparito: Ctrl+Alt+R per riapparire"
+            return "Ready: join your palms to vanish"
+        return "Vanished: Ctrl+Alt+R to reappear"
 
     def process(self, frame: np.ndarray, now: float) -> np.ndarray:
         """Return the frame to show; never draws text or UI on the video."""
@@ -430,7 +430,7 @@ class NarutoVanish:
     def _watch_hands(self, frame: np.ndarray, now: float) -> None:
         debug = self.debug_view
         if debug is not None and debug.frozen:
-            # Waiting for the SI/NO answer: pause detection and the hold timer.
+            # Waiting for the YES/NO answer: pause detection and the hold timer.
             self.joined_since = None
             return
         self.watcher.submit(frame, now)
@@ -445,7 +445,7 @@ class NarutoVanish:
         if hold >= 1.0 and result.joined:
             if debug is not None:
                 # Debug mode never plays the effect: freeze and ask instead.
-                debug.freeze("rilevato")
+                debug.freeze("detected")
                 self.joined_since = None
             else:
                 self.vanish(frame, now)
@@ -474,12 +474,12 @@ def self_test() -> int:
     required = (SEGMENTER_MODEL, HAND_MODEL, SOUND_PATH)
     missing = [path.name for path in required if not path.is_file()]
     if missing:
-        raise RuntimeError(f"Risorse mancanti: {', '.join(missing)}")
+        raise RuntimeError(f"Missing resources: {', '.join(missing)}")
     load_log()
     import pygame.mixer  # noqa: F401  The distributed build must contain its MP3 decoder.
     for task in create_tasks():
         task.close()
-    print("[Webcam] Self-test completato: modelli, asset e audio presenti.")
+    print("[Webcam] Self-test passed: models, assets and audio found.")
     return 0
 
 
@@ -494,7 +494,8 @@ def run() -> int:
 KEY_ACTIONS = {  # While an app window is focused; see global_hotkeys for the rest.
     ord(" "): "capture", ord("b"): "capture", ord("u"): "upload",
     ord("r"): "reappear", ord("v"): "vanish", ord("f"): "fullscreen", ord("d"): "debug",
-    ord("s"): "answer_yes", ord("n"): "answer_no",  # Debug mani: SI / NO.
+    ord("y"): "answer_yes", ord("s"): "answer_yes",  # Hand debug: YES (S kept for old habits).
+    ord("n"): "answer_no",
     ord("p"): "permanent",
 }
 
@@ -527,7 +528,7 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
         nonlocal selected
         image = read_image(path)
         if image is None:
-            print(f"[Sfondi] Immagine non leggibile: {path}")
+            print(f"[Backgrounds] Unreadable image: {path}")
             return
         app.set_background(image)
         remember_background(path)
@@ -547,8 +548,8 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
     if app.background is None:
         selected = None
         app.capture_background(time.perf_counter())
-    print("[Webcam] Tasti nella finestra: B/SPAZIO cattura sfondo, U carica immagine, P sfondo fisso, "
-          "R riappari, V svanisci, D debug mani, F fullscreen, Q esci.")
+    print("[Webcam] Window keys: B/SPACE capture background, U upload image, P fixed background, "
+          "R reappear, V vanish, D hand debug, F fullscreen, Q quit.")
     virtual_camera = None
     first_frame = True
     last_status = None
@@ -556,7 +557,7 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
     while True:
         ok, frame = capture.read()
         if not ok:
-            raise RuntimeError("La webcam ha smesso di restituire immagini.")
+            raise RuntimeError("The webcam stopped returning frames.")
         if not args.no_mirror:
             frame = cv2.flip(frame, 1)
         if first_frame:
@@ -603,7 +604,7 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
                     try:
                         select(import_image(source))
                     except (RuntimeError, OSError) as error:
-                        print(f"[Sfondi] {error}")
+                        print(f"[Backgrounds] {error}")
                     files = list_backgrounds()
             elif action in ("answer_yes", "answer_no") and app.debug_view is not None:
                 app.debug_view.answer(action == "answer_yes")
@@ -611,7 +612,7 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
                 app.permanent = not app.permanent
                 app.smoothed_mask = None
                 save_settings(permanent=app.permanent)
-                print(f"[Sfondi] Sfondo fisso {'attivo' if app.permanent else 'disattivato'}.")
+                print(f"[Backgrounds] Fixed background {'on' if app.permanent else 'off'}.")
             elif action == "debug":
                 if app.debug_view is None:
                     app.debug_view = HandDebugView()
@@ -630,7 +631,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     except Exception as error:
-        print(f"\n[Vanish Lab] ERRORE: {error}", file=sys.stderr)
+        print(f"\n[Vanish Lab] ERROR: {error}", file=sys.stderr)
         return 1
 
 

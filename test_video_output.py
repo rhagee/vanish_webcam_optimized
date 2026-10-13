@@ -49,7 +49,7 @@ class VirtualCameraTests(unittest.TestCase):
     def test_send_preserves_colors_and_handles_noncontiguous_frames(self):
         camera = Mock(width=40, height=24)
         frame = np.zeros((24, 40, 3), np.uint8)
-        frame[:] = (10, 70, 200)  # BGR: non scambiare rosso e blu.
+        frame[:] = (10, 70, 200)  # BGR: do not swap red and blue.
         app.send_virtual_frame(camera, frame[:, ::-1])
         sent = camera.send.call_args.args[0]
         self.assertTrue(sent.flags.c_contiguous)
@@ -71,8 +71,8 @@ def run_mock_video(test, frames, times, keys, joined=False, send_error=None,
         saved[Path("ricordato.png")] = remembered
 
     def save_capture(image):
-        saved[Path("cattura.png")] = image
-        return Path("cattura.png")
+        saved[Path("capture.png")] = image
+        return Path("capture.png")
 
     hotkeys = Mock()
     hotkeys.poll.side_effect = [list(hotkey_actions)] + [[]] * len(frames)
@@ -152,7 +152,7 @@ class VideoLoopTests(unittest.TestCase):
         mocks.mask.assert_not_called()  # No segmentation until the effect starts.
         mocks.sound.play.assert_not_called()
         mocks.save.assert_called_once()  # Captured background saved and remembered.
-        mocks.remember.assert_called_once_with(Path("cattura.png"))
+        mocks.remember.assert_called_once_with(Path("capture.png"))
 
     def test_remembered_background_skips_capture_and_hotkey_vanishes(self):
         remembered = np.full((24, 40, 3), 200, np.uint8)

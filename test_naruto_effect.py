@@ -154,7 +154,7 @@ class HandWatcherTests(unittest.TestCase):
         watcher = self.make_watcher([hand(0.45)], [hand(0.45), hand(0.55)])
         result = watcher.detect(self.frame, 1.0)
         self.assertEqual((result.joined, result.count), (True, 2))
-        self.assertEqual([p.name for p in result.passes], ["intera", "zoom"])
+        self.assertEqual([p.name for p in result.passes], ["full", "zoom"])
         self.assertFalse(result.passes[0].check["joined"])
         # Zoomed points are mapped back into full-frame pixels.
         x1, y1 = result.passes[1].rect[:2]

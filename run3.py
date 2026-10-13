@@ -14,7 +14,7 @@ BASE_DIR = Path(__file__).resolve().parent
 FACE_MODEL_PATH = BASE_DIR / "face_landmarker.task"
 HAND_MODEL_PATH = BASE_DIR / "hand_landmarker.task"
 MEME_PATH = BASE_DIR / "memes" / "image.png"
-# YUTA_MEME_PATH disabilitato: la relativa posa non viene caricata o rilevata.
+# YUTA_MEME_PATH disabled: its pose is neither loaded nor detected.
 HEARING_MEME_PATH = BASE_DIR / "memes" / "hearing.png"
 MEMEOMG_PATH = BASE_DIR / "memes" / "memeomg.png"
 SAD_MEME_PATH = BASE_DIR / "memes" / "sad.png"
@@ -30,7 +30,7 @@ CAPTURE_WIDTH = 1280
 CAPTURE_HEIGHT = 720
 VIRTUAL_CAMERA_FPS = 30
 
-# Indici MediaPipe delle parti principali della mano.
+# MediaPipe indices of the main parts of the hand.
 WRIST = 0
 PALM_INDICES = (0, 5, 9, 13, 17)
 FINGERTIP_INDICES = (8, 12, 16, 20)
@@ -39,46 +39,46 @@ FINGERTIP_INDICES = (8, 12, 16, 20)
 def load_meme(path):
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None:
-        raise FileNotFoundError(f"Impossibile leggere l'immagine: {path}")
+        raise FileNotFoundError(f"Unable to read image: {path}")
     return image
 
 
 def open_camera(index=0):
-    """Apre la webcam provando i backend Windows e attende il primo frame."""
+    """Open the webcam by trying the Windows backends and wait for the first frame."""
     backends = (
         ("DirectShow", cv2.CAP_DSHOW),
         ("Media Foundation", cv2.CAP_MSMF),
-        ("automatico", cv2.CAP_ANY),
+        ("automatic", cv2.CAP_ANY),
     )
     attempts = []
 
     for backend_name, backend in backends:
         cap = cv2.VideoCapture(index, backend)
         if not cap.isOpened():
-            attempts.append(f"{backend_name}: non disponibile")
+            attempts.append(f"{backend_name}: not available")
             cap.release()
             continue
 
-        # 1280x720 e una modalita molto piu comune di 960x540. Il frame viene
-        # ridimensionato solo dopo l'acquisizione, per la visualizzazione.
+        # 1280x720 is a far more common mode than 960x540. The frame is only
+        # resized after capture, for display.
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
 
         for _ in range(30):
             ok, frame = cap.read()
             if ok and frame is not None and frame.size:
-                print(f"[WEBCAM] Backend attivo: {backend_name}")
+                print(f"[WEBCAM] Active backend: {backend_name}")
                 return cap, frame
             time.sleep(0.05)
 
-        attempts.append(f"{backend_name}: aperta, ma nessun frame ricevuto")
+        attempts.append(f"{backend_name}: opened, but no frame received")
         cap.release()
 
     details = "; ".join(attempts)
     raise RuntimeError(
-        "Non riesco a ricevere immagini dalla webcam. "
-        "Chiudi eventuali programmi che la stanno usando e controlla i permessi "
-        f"di Windows. Tentativi: {details}"
+        "Unable to receive images from the webcam. "
+        "Close any programs that are using it and check the Windows "
+        f"permissions. Attempts: {details}"
     )
 
 
@@ -106,7 +106,7 @@ def hand_features(hand_landmarks):
 
 
 def hands_on_face_pose(hands, face_box):
-    """Riconosce due mani verticali e ravvicinate davanti al volto."""
+    """Detect two upright hands held close together in front of the face."""
     if len(hands) < 2 or face_box is None:
         return False, 0.0
 
@@ -132,7 +132,7 @@ def hands_on_face_pose(hands, face_box):
             and fy1 + 0.18 * face_height <= center_y <= fy2 + 0.35 * face_height
         )
 
-        # Nel gesto di riferimento le dita sono sopra al polso.
+        # In the reference gesture the fingers are above the wrist.
         vertical_hand = hand["wrist_y"] - hand["fingertip_y"] >= 0.08 * face_height
 
         points_near_face = sum(
@@ -156,7 +156,7 @@ def hands_on_face_pose(hands, face_box):
     right_x = right_hand["center"][0]
     horizontal_gap = (right_x - left_x) / face_width
 
-    # Le mani devono stare ai due lati della zona centrale del volto.
+    # The hands must sit on either side of the central area of the face.
     balanced = (
         left_x <= face_center_x + 0.16 * face_width
         and right_x >= face_center_x - 0.16 * face_width
@@ -169,7 +169,7 @@ def hands_on_face_pose(hands, face_box):
 
 
 def extended_finger_states(landmarks):
-    """Restituisce lo stato di indice, medio, anulare e mignolo."""
+    """Return the extended state of the index, middle, ring and little fingers."""
     wrist = np.array([landmarks[WRIST].x, landmarks[WRIST].y])
     states = []
     for tip_index, pip_index in ((8, 6), (12, 10), (16, 14), (20, 18)):
@@ -182,17 +182,17 @@ def extended_finger_states(landmarks):
 
 
 def extended_finger_count(landmarks):
-    """Conta indice, medio, anulare e mignolo visibilmente distesi."""
+    """Count the index, middle, ring and little fingers that are visibly extended."""
     return sum(extended_finger_states(landmarks))
 
 
 def thumbs_up_pose(hands, face_box):
-    """Riconosce una mano chiusa con il solo pollice disteso verso l'alto."""
+    """Detect a closed hand with only the thumb extended upward."""
     if not hands or face_box is None:
         return False, 0.0
 
-    # Valuta ogni mano separatamente: il gesto deve funzionare anche quando
-    # MediaPipe vede una seconda mano che non sta facendo il pollice alzato.
+    # Evaluate each hand separately: the gesture must work even when
+    # MediaPipe sees a second hand that is not giving a thumbs up.
     if len(hands) > 1:
         results = [thumbs_up_pose([hand], face_box) for hand in hands]
         return max(results, key=lambda result: (result[0], result[1]))
@@ -222,8 +222,8 @@ def thumbs_up_pose(hands, face_box):
         and abs(thumb_axis[0]) <= 0.78 * thumb_rise
     )
 
-    # I due segmenti del pollice devono essere quasi allineati: cosi una mano
-    # chiusa con il pollice ripiegato non viene scambiata per un "OK".
+    # The two thumb segments must be nearly aligned, so a closed hand with
+    # the thumb folded is not mistaken for an "OK".
     lower_thumb = thumb_ip - thumb_mcp
     upper_thumb = thumb_tip - thumb_ip
     lower_length = max(0.001, float(np.linalg.norm(lower_thumb)))
@@ -233,7 +233,7 @@ def thumbs_up_pose(hands, face_box):
     )
     thumb_extended = thumb_length >= 0.62 * palm_scale and thumb_alignment >= 0.55
 
-    # Indice, medio, anulare e mignolo devono rimanere ripiegati nel pugno.
+    # Index, middle, ring and little fingers must stay folded into the fist.
     folded_fingers = not any(extended_finger_states(landmarks))
 
     hx1, hy1, hx2, hy2 = hand["bbox"]
@@ -263,7 +263,7 @@ def thumbs_up_pose(hands, face_box):
 
 
 def calma_hand_pose(hands, face_box):
-    """Riconosce una mano aperta protesa davanti al petto, col palmo visibile."""
+    """Detect an open hand held out in front of the chest, palm visible."""
     if len(hands) != 1 or face_box is None:
         return False, 0.0
 
@@ -282,8 +282,8 @@ def calma_hand_pose(hands, face_box):
     )
     hand_axis = fingertip_center - wrist
 
-    # Come nella foto, la mano sta davanti alla parte alta del busto e le dita
-    # sono rivolte verso l'alto, anche con una moderata inclinazione laterale.
+    # As in the photo, the hand is in front of the upper torso and the fingers
+    # point upward, even with a moderate sideways tilt.
     in_front_of_chest = (
         abs(palm_x - face_center_x) <= 1.05 * face_width
         and fy2 - 0.12 * face_height <= palm_y <= fy2 + 1.65 * face_height
@@ -296,8 +296,8 @@ def calma_hand_pose(hands, face_box):
     finger_states = extended_finger_states(landmarks)
     four_fingers_open = all(finger_states)
 
-    # Le quattro dita devono puntare pressappoco nella stessa direzione: questo
-    # esclude mani molto divaricate o gesti differenti con un palmo aperto.
+    # The four fingers must point in roughly the same direction: this rules
+    # out widely spread hands or other open-palm gestures.
     finger_directions = []
     for tip_index, mcp_index in ((8, 5), (12, 9), (16, 13), (20, 17)):
         direction = np.array(
@@ -348,7 +348,7 @@ def calma_hand_pose(hands, face_box):
 
 
 def yuta_hand_pose(hands, face_box):
-    """Riconosce una mano aperta, grande e distesa davanti al volto."""
+    """Detect a large, open, outstretched hand in front of the face."""
     if len(hands) != 1 or face_box is None:
         return False, 0.0
 
@@ -377,8 +377,8 @@ def yuta_hand_pose(hands, face_box):
     large_hand = hand_width >= 0.38 * face_width and hand_height >= 0.55 * face_height
     vertical_hand = hand["wrist_y"] - hand["fingertip_y"] >= 0.10 * face_height
 
-    # Una falange e considerata distesa se la punta e sensibilmente piu
-    # lontana dal polso rispetto alla sua articolazione intermedia.
+    # A finger counts as extended if its tip is noticeably farther from the
+    # wrist than its middle joint.
     extended_fingers = extended_finger_count(landmarks)
 
     fingertip_xs = [landmarks[i].x for i in (4, 8, 12, 16, 20)]
@@ -393,7 +393,7 @@ def yuta_hand_pose(hands, face_box):
 
 
 def hearing_hand_pose(hands, face_box):
-    """Riconosce una mano aperta accanto al volto, all'altezza dell'orecchio."""
+    """Detect an open hand beside the face, at ear height."""
     if len(hands) != 1 or face_box is None:
         return False, 0.0
 
@@ -405,7 +405,7 @@ def hearing_hand_pose(hands, face_box):
     center_x, center_y = hand["center"]
     hx1, hy1, hx2, hy2 = hand["bbox"]
 
-    # Il palmo deve trovarsi appena oltre uno dei due bordi del viso.
+    # The palm must be just beyond one of the two edges of the face.
     beside_left_ear = fx1 - 0.70 * face_width <= center_x <= fx1 + 0.08 * face_width
     beside_right_ear = fx2 - 0.08 * face_width <= center_x <= fx2 + 0.70 * face_width
     beside_face = beside_left_ear or beside_right_ear
@@ -418,7 +418,7 @@ def hearing_hand_pose(hands, face_box):
     extended_fingers = extended_finger_count(landmarks)
     open_or_cupped = extended_fingers >= 3
 
-    # Almeno parte della mano deve restare vicina al lato della testa.
+    # At least part of the hand must stay close to the side of the head.
     near_head_points = sum(
         fx1 - 0.75 * face_width <= landmark.x <= fx2 + 0.75 * face_width
         and fy1 - 0.18 * face_height <= landmark.y <= fy2 + 0.30 * face_height
@@ -441,7 +441,7 @@ def hearing_hand_pose(hands, face_box):
 
 
 def hands_behind_head_pose(hands, face_box):
-    """Riconosce due mani separate ai lati della testa, dietro le orecchie."""
+    """Detect two separate hands at the sides of the head, behind the ears."""
     if len(hands) < 2 or face_box is None:
         return False, 0.0
 
@@ -497,7 +497,7 @@ def hands_behind_head_pose(hands, face_box):
 
 
 def prayer_hands_pose(hands, face_box):
-    """Riconosce due mani giunte o intrecciate, ovunque siano nel frame."""
+    """Detect two hands joined or clasped together, anywhere in the frame."""
     if len(hands) < 2:
         return False, 0.0
 
@@ -515,8 +515,8 @@ def prayer_hands_pose(hands, face_box):
     center_distance = float(np.hypot(first_x - second_x, first_y - second_y))
     centers_close = center_distance <= 1.05 * hand_scale
 
-    # Le aree delle due mani devono toccarsi o essere separate solo da un
-    # piccolo spazio, indipendentemente dalla loro posizione rispetto al viso.
+    # The two hand areas must touch or be separated by only a small gap,
+    # regardless of their position relative to the face.
     horizontal_distance = max(0.0, max(ax1, bx1) - min(ax2, bx2))
     vertical_distance = max(0.0, max(ay1, by1) - min(ay2, by2))
     boxes_touching = (
@@ -524,8 +524,8 @@ def prayer_hands_pose(hands, face_box):
         and vertical_distance <= 0.18 * hand_scale
     )
 
-    # Nelle mani giunte diversi landmark delle due mani finiscono molto vicini.
-    # Questo rende il gesto piu semplice senza confonderlo con mani solo affiancate.
+    # With joined hands, several landmarks of the two hands end up very close.
+    # This makes the gesture easier without confusing it with side-by-side hands.
     first_points = np.array(
         [[landmark.x, landmark.y] for landmark in first["landmarks"]],
         dtype=np.float32,
@@ -560,7 +560,7 @@ def prayer_hands_pose(hands, face_box):
 
 
 def timeout_hands_pose(hands, face_box):
-    """Riconosce due mani aperte e perpendicolari che formano una T."""
+    """Detect two open, perpendicular hands forming a T."""
     if len(hands) < 2 or face_box is None:
         return False, 0.0
 
@@ -637,7 +637,7 @@ def timeout_hands_pose(hands, face_box):
 
 
 def pointing_at_self_pose(hands, face_box):
-    """Riconosce una mano sotto il volto con il solo indice rivolto al petto."""
+    """Detect a hand below the face with only the index finger pointing at the chest."""
     if len(hands) != 1 or face_box is None:
         return False, 0.0
 
@@ -657,8 +657,8 @@ def pointing_at_self_pose(hands, face_box):
     finger_states = extended_finger_states(landmarks)
     index_only = finger_states[0] and not any(finger_states[1:])
 
-    # La punta dell'indice deve trovarsi sotto il mento e vicino alla linea
-    # centrale del corpo, mentre il polso rimane piu esterno.
+    # The index fingertip must be below the chin and near the body's
+    # centerline, while the wrist stays farther out.
     fingertip_at_chest = (
         abs(index_tip_x - face_center_x) <= 0.58 * face_width
         and fy2 - 0.06 * face_height <= index_tip_y <= fy2 + 1.55 * face_height
@@ -777,7 +777,7 @@ def resize_contain(image, max_width, max_height):
 
 
 def overlay_meme_on_face(frame, meme, face_box):
-    """Sovrappone il meme al volto, mantenendolo dentro al frame video."""
+    """Overlay the meme on the face, keeping it inside the video frame."""
     if face_box is None:
         return
 
@@ -788,7 +788,7 @@ def overlay_meme_on_face(frame, meme, face_box):
     center_x = round(((fx1 + fx2) / 2) * frame_width)
     center_y = round(((fy1 + fy2) / 2) * frame_height)
 
-    # L'area e abbastanza grande da coprire il viso senza occupare tutto il video.
+    # The area is large enough to cover the face without filling the whole video.
     max_width = min(frame_width, round(face_width * 1.70))
     max_height = min(frame_height, round(face_height * 1.50))
     shown = resize_contain(meme, max_width, max_height)
@@ -799,7 +799,7 @@ def overlay_meme_on_face(frame, meme, face_box):
     destination_x2 = destination_x1 + image_width
     destination_y2 = destination_y1 + image_height
 
-    # Ritaglia solamente la parte che eventualmente supera i bordi del frame.
+    # Crop only the part that may extend past the frame edges.
     source_x1 = max(0, -destination_x1)
     source_y1 = max(0, -destination_y1)
     source_x2 = image_width - max(0, destination_x2 - frame_width)
@@ -874,14 +874,14 @@ def main():
             fmt=pyvirtualcam.PixelFormat.BGR,
             backend="obs",
         )
-        print(f"[WEBCAM VIRTUALE] Attiva: {virtual_camera.device}")
+        print(f"[VIRTUAL WEBCAM] Active: {virtual_camera.device}")
     except Exception as exc:
         cap.release()
         face_landmarker.close()
         hand_landmarker.close()
         raise RuntimeError(
-            "Non riesco ad avviare OBS Virtual Camera. Chiudi OBS Studio o "
-            "disattiva la sua Virtual Camera, quindi riprova."
+            "Unable to start OBS Virtual Camera. Close OBS Studio or "
+            "disable its Virtual Camera, then try again."
         ) from exc
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -913,7 +913,7 @@ def main():
                     time.sleep(0.03)
                     continue
                 raise RuntimeError(
-                    "La webcam ha smesso di inviare fotogrammi per circa un secondo."
+                    "The webcam stopped sending frames for about one second."
                 )
             camera_read_failures = 0
 
@@ -974,8 +974,8 @@ def main():
                 last_face_box,
             )
 
-            # Il pollice alzato ha precedenza: basta che una delle mani faccia
-            # il gesto, anche quando una seconda mano e visibile nel frame.
+            # Thumbs up takes priority: it is enough for one hand to make the
+            # gesture, even when a second hand is visible in the frame.
             if ok_match:
                 detected_pose = "ok"
                 current_confidence = ok_confidence
@@ -1042,27 +1042,27 @@ def main():
 
             phase = (time.monotonic() * 0.65) % 1.0
             for index, square in squares.items():
-                draw_analysis_square(frame, square, f"MANO {index + 1}", phase)
+                draw_analysis_square(frame, square, f"HAND {index + 1}", phase)
 
             status_color = (0, 255, 210) if active_pose else (0, 210, 255)
             if active_pose == "hearing":
-                status = "POSE ASCOLTO RILEVATA"
+                status = "LISTENING POSE DETECTED"
             elif active_pose == "calma":
-                status = "GESTO CALMA RILEVATO"
+                status = "CALM DOWN GESTURE DETECTED"
             elif active_pose == "memeomg":
-                status = "MANI DIETRO LA TESTA RILEVATE"
+                status = "HANDS BEHIND HEAD DETECTED"
             elif active_pose == "sad":
-                status = "POSE PREGHIERA RILEVATA"
+                status = "PRAYER POSE DETECTED"
             elif active_pose == "me":
-                status = "INDICAZIONE SU DI ME RILEVATA"
+                status = "POINTING AT ME DETECTED"
             elif active_pose == "stop":
-                status = "GESTO TIMEOUT RILEVATO"
+                status = "TIMEOUT GESTURE DETECTED"
             elif active_pose == "ok":
-                status = "POLLICE ALZATO RILEVATO"
+                status = "THUMBS UP DETECTED"
             elif active_pose == "two_hands":
-                status = "POSE DUE MANI RILEVATA"
+                status = "TWO HANDS POSE DETECTED"
             else:
-                status = "ANALISI MANI..."
+                status = "ANALYZING HANDS..."
             cv2.putText(
                 frame,
                 status,
@@ -1075,7 +1075,7 @@ def main():
             )
             cv2.putText(
                 frame,
-                "Q/ESC: esci",
+                "Q/ESC: quit",
                 (18, CAMERA_HEIGHT - 16),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
@@ -1086,7 +1086,7 @@ def main():
 
             cv2.putText(
                 frame,
-                f"confidenza: {confidence:.0%}",
+                f"confidence: {confidence:.0%}",
                 (CAMERA_WIDTH - 185, CAMERA_HEIGHT - 16),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
@@ -1095,7 +1095,7 @@ def main():
                 cv2.LINE_AA,
             )
 
-            # Lo stesso frame mostrato a schermo viene pubblicato come webcam.
+            # The same frame shown on screen is published as the webcam.
             virtual_camera.send(frame)
             cv2.imshow(WINDOW_NAME, frame)
 

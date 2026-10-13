@@ -1,4 +1,4 @@
-"""'Debug mani' window: shows what the hand models see and records labeled samples.
+"""'Hand debug' window: shows what the hand models see and records labeled samples.
 
 Nothing here touches the preview or the virtual camera. Labeled samples go to
 debug/dataset.jsonl (one JSON object per line) plus the raw frame as JPG, so the
@@ -17,14 +17,14 @@ import numpy as np
 from backgrounds import DATA_DIR
 from naruto_effect import JOIN_RULES
 
-DEBUG_NAME = "Debug mani"
+DEBUG_NAME = "Hand debug"
 DEBUG_DIR = DATA_DIR / "debug"
 DATASET_PATH = DEBUG_DIR / "dataset.jsonl"
 VIEW_WIDTH = 640
 PANEL_HEIGHT = 300
 FREEZE_DELAY_SECONDS = 3.0
 RECENT_SECONDS = 2.0
-ONE_HAND = "1 mano sola"
+ONE_HAND = "only 1 hand"
 
 # MediaPipe hand skeleton.
 CONNECTIONS = (
@@ -32,7 +32,7 @@ CONNECTIONS = (
     (5, 9), (9, 10), (10, 11), (11, 12), (9, 13), (13, 14), (14, 15), (15, 16),
     (13, 17), (0, 17), (17, 18), (18, 19), (19, 20),
 )
-PASS_COLORS = {"intera": (90, 220, 90), "zoom": (0, 170, 255)}
+PASS_COLORS = {"full": (90, 220, 90), "zoom": (0, 170, 255)}
 GREEN, RED, WHITE, GREY = (60, 190, 60), (50, 50, 210), (240, 240, 240), (160, 160, 160)
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -54,7 +54,7 @@ def blocking_rules(result) -> list[str]:
 
 
 class HandDebugView:
-    """Live view that freezes (on detection or click) until labeled SI / NO."""
+    """Live view that freezes (on detection or click) until labeled YES / NO."""
 
     def __init__(self):
         self.result = None
@@ -70,7 +70,7 @@ class HandDebugView:
         self.recent: deque = deque()  # (seen_at, joined, blocking rules) per result.
         cv2.namedWindow(DEBUG_NAME, cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback(DEBUG_NAME, self._on_mouse)
-        print(f"[Debug] Finestra '{DEBUG_NAME}' aperta. Campioni salvati in {DEBUG_DIR}")
+        print(f"[Debug] '{DEBUG_NAME}' window open. Samples are saved to {DEBUG_DIR}")
 
     def update(self, result, hold: float) -> None:
         if not self.frozen:
@@ -99,7 +99,7 @@ class HandDebugView:
         self.frozen, self.freeze_at, self.dirty = False, None, True
 
     def answer(self, is_naruto: bool) -> None:
-        """SI / NO (buttons or S / N keys); only a frozen frame can be answered."""
+        """YES / NO (buttons or Y / N keys); only a frozen frame can be answered."""
         if self.frozen:
             self.label(is_naruto)
 
@@ -111,7 +111,7 @@ class HandDebugView:
                         self.answer(is_naruto)
                         return
             elif y < self.image_height:
-                self.freeze("manuale")
+                self.freeze("manual")
         elif event == cv2.EVENT_RBUTTONDOWN and not self.frozen:
             self.freeze_at = time.perf_counter() + FREEZE_DELAY_SECONDS
             self.dirty = True
@@ -134,7 +134,7 @@ class HandDebugView:
         result = self.result
         DEBUG_DIR.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
-        name = f"{'si' if is_naruto else 'no'}_{stamp}"
+        name = f"{'yes' if is_naruto else 'no'}_{stamp}"
         ok, jpg = cv2.imencode(".jpg", result.frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
         if ok:
             jpg.tofile(str(DEBUG_DIR / f"{name}.jpg"))
@@ -143,7 +143,7 @@ class HandDebugView:
             "image": f"{name}.jpg",
             "label": is_naruto,
             "detected": result.joined,
-            "reason": self.reason,  # manuale / timer / rilevato (algorithm fired)
+            "reason": self.reason,  # manual / timer / detected (algorithm fired)
             "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "frame_size": [width, height],
             "hold": round(self.hold, 3),
@@ -160,15 +160,15 @@ class HandDebugView:
         with DATASET_PATH.open("a", encoding="utf-8") as output:
             output.write(json.dumps(record) + "\n")
         count = DATASET_PATH.read_text(encoding="utf-8").count("\n")
-        verdict = "corretto" if is_naruto == result.joined else "SBAGLIATO"
-        self.message = f"Salvato #{count} come {'SI' if is_naruto else 'NO'} (algoritmo {verdict})"
+        verdict = "right" if is_naruto == result.joined else "WRONG"
+        self.message = f"Saved #{count} as {'YES' if is_naruto else 'NO'} (algorithm {verdict})"
         print(f"[Debug] {self.message}: {name}.jpg")
         self.resume()
 
     def render(self, now: float) -> np.ndarray:
         if self.result is None or self.result.frame is None:
             canvas = np.full((360 + PANEL_HEIGHT, VIEW_WIDTH, 3), 30, np.uint8)
-            _text(canvas, "In attesa del riconoscimento mani (serve uno sfondo pronto)...",
+            _text(canvas, "Waiting for hand recognition (needs a background to be ready)...",
                   (16, 180), 0.5, GREY)
             self.image_height = 360
             return canvas
@@ -180,7 +180,7 @@ class HandDebugView:
         self.image_height = view.shape[0]
         for p in result.passes:
             color = PASS_COLORS.get(p.name, WHITE)
-            if p.name != "intera":
+            if p.name != "full":
                 x1, y1, x2, y2 = (round(v * scale) for v in p.rect)
                 cv2.rectangle(view, (x1, y1), (x2, y2), color, 2)
             for hand in p.hands:
@@ -193,19 +193,19 @@ class HandDebugView:
         # Verdict of the current algorithm for this exact frame.
         banner = GREEN if result.joined else RED
         cv2.rectangle(view, (0, 0), (250, 34), banner, -1)
-        _text(view, "OK - rilevato" if result.joined else "NO - non rilevato",
+        _text(view, "OK - detected" if result.joined else "NO - not detected",
               (10, 24), 0.7, WHITE, 2)
         if self.frozen:
-            _text(view, f"FERMO ({self.reason})", (VIEW_WIDTH - 190, 24), 0.6, (0, 220, 255), 2)
+            _text(view, f"FROZEN ({self.reason})", (VIEW_WIDTH - 190, 24), 0.6, (0, 220, 255), 2)
         elif self.freeze_at is not None:
             left = int(np.ceil(self.freeze_at - now))
-            _text(view, f"Foto tra {left} s", (VIEW_WIDTH - 150, 24), 0.7, (0, 220, 255), 2)
+            _text(view, f"Photo in {left} s", (VIEW_WIDTH - 150, 24), 0.7, (0, 220, 255), 2)
 
         panel = np.full((PANEL_HEIGHT, VIEW_WIDTH, 3), 30, np.uint8)
         y = 24
         for p in result.passes:
             color = PASS_COLORS.get(p.name, WHITE)
-            _text(panel, f"{p.name}: mani {len(p.hands)}", (12, y), 0.5, color)
+            _text(panel, f"{p.name}: hands {len(p.hands)}", (12, y), 0.5, color)
             for index, (name, limit, below) in enumerate(JOIN_RULES):
                 value = p.check["values"].get(name)
                 if value is None:
@@ -219,23 +219,23 @@ class HandDebugView:
             y += 20 * ((len(JOIN_RULES) + 2) // 3) + 8
         cv2.rectangle(panel, (12, y), (12 + 200, y + 12), GREY, 1)
         cv2.rectangle(panel, (12, y), (12 + int(200 * self.hold), y + 12), GREEN, -1)
-        _text(panel, "tenuta prima dell'effetto", (222, y + 11), 0.42, GREY)
+        _text(panel, "hold before the effect", (222, y + 11), 0.42, GREY)
         y += 34
         summary = self.recent_summary()
         if summary["frames"]:
             blocked = ", ".join(f"{rule} {share:.0%}"
                                 for rule, share in list(summary["blocked_by"].items())[:3])
-            _text(panel, f"Ultimi 2 s: riconosciuto {summary['ok']:.0%}"
-                         + (f"  |  blocca: {blocked}" if blocked else ""),
+            _text(panel, f"Last 2 s: recognized {summary['ok']:.0%}"
+                         + (f"  |  blocked by: {blocked}" if blocked else ""),
                   (12, y), 0.45, (0, 220, 255))
         y += 22
 
         self.buttons = {}
         if self.frozen:
-            _text(panel, "E' la posa Naruto giusta?", (12, y + 4), 0.55, WHITE)
+            _text(panel, "Is this the right Naruto pose?", (12, y + 4), 0.55, WHITE)
             y += 14
-            for is_naruto, label, left, color in ((True, "SI - e' Naruto", 12, GREEN),
-                                                  (False, "NO - non lo e'", 330, RED)):
+            for is_naruto, label, left, color in ((True, "YES - Naruto", 12, GREEN),
+                                                  (False, "NO - not it", 330, RED)):
                 top = y
                 cv2.rectangle(panel, (left, top), (left + 298, top + 46), color, -1)
                 _text(panel, label, (left + 60, top + 31), 0.7, WHITE, 2)
@@ -244,8 +244,8 @@ class HandDebugView:
             y += 62
         else:
             y += 6
-        hint = ("Scegli con i bottoni oppure con i tasti S / N" if self.frozen else
-                "Clic sull'immagine: blocca ora  |  Clic destro: blocca tra 3 s")
+        hint = ("Choose with the buttons or the Y / N keys" if self.frozen else
+                "Click the image: freeze now  |  Right-click: freeze in 3 s")
         _text(panel, hint, (12, min(y, PANEL_HEIGHT - 30)), 0.45, GREY)
         if self.message:
             _text(panel, self.message, (12, PANEL_HEIGHT - 10), 0.45, (0, 220, 255))

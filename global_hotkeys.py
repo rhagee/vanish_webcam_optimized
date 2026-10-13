@@ -27,7 +27,7 @@ class GlobalHotkeys:
         self.thread_id: int | None = None
         self.thread: threading.Thread | None = None
         if sys.platform != "win32":
-            print("[Tasti] Scorciatoie globali disponibili solo su Windows.")
+            print("[Keys] Global shortcuts are only available on Windows.")
             return
         ready = threading.Event()
         self.thread = threading.Thread(target=self._run, args=(ready,), daemon=True)
@@ -47,9 +47,9 @@ class GlobalHotkeys:
             if user32.RegisterHotKey(None, hotkey_id, modifiers | MOD_NOREPEAT, key):
                 registered.append(label)
             else:
-                print(f"[Tasti] {label} è già usato da un altro programma: non disponibile.")
+                print(f"[Keys] {label} is already used by another program: not available.")
         if registered:
-            print(f"[Tasti] Scorciatoie globali attive: {', '.join(registered)}")
+            print(f"[Keys] Global shortcuts active: {', '.join(registered)}")
         ready.set()
         message = wintypes.MSG()
         try:

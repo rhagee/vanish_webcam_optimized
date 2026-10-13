@@ -17,7 +17,7 @@ def make_result(joined_hands=True, now=1.0):
     frame = np.full((540, 960, 3), 70, np.uint8)
     found = [hand(0.45), hand(0.55)] if joined_hands else [hand(0.45)]
     points = hand_points(found, 960, 540)
-    passes = [app.HandPass("intera", (0, 0, 960, 540), points, joined_hands_check(points, 960, 540))]
+    passes = [app.HandPass("full", (0, 0, 960, 540), points, joined_hands_check(points, 960, 540))]
     if not joined_hands:
         passes.append(app.HandPass("zoom", (115, 97, 844, 540), [], joined_hands_check([], 960, 540)))
     return app.HandResult(now, joined_hands, len(found), frame, passes)
@@ -57,18 +57,18 @@ class HandDebugViewTests(unittest.TestCase):
         self.assertTrue(self.view.frozen)
         self.view.update(make_result(True), 1.0)  # Ignored while frozen.
         self.view._on_mouse(cv2.EVENT_LBUTTONDOWN, 100, 100, 0, None)
-        self.assertTrue(self.view.frozen)  # Only SI / NO unfreeze it.
+        self.assertTrue(self.view.frozen)  # Only YES / NO unfreeze it.
         self.view.tick(1.1)
         x1, y1, x2, y2 = self.view.buttons[True]
         self.view._on_mouse(cv2.EVENT_LBUTTONDOWN, (x1 + x2) // 2, (y1 + y2) // 2, 0, None)
         self.assertFalse(self.view.frozen)
         record = json.loads((self.folder / "dataset.jsonl").read_text(encoding="utf-8"))
         self.assertEqual((record["label"], record["detected"], record["reason"]),
-                         (True, False, "manuale"))
-        self.assertEqual([p["name"] for p in record["passes"]], ["intera", "zoom"])
+                         (True, False, "manual"))
+        self.assertEqual([p["name"] for p in record["passes"]], ["full", "zoom"])
         self.assertEqual(len(record["passes"][0]["hands"][0]), 21)
         self.assertTrue((self.folder / record["image"]).is_file())
-        self.assertIn("SBAGLIATO", self.view.message)  # Algorithm missed a real pose.
+        self.assertIn("WRONG", self.view.message)  # Algorithm missed a real pose.
 
     def test_right_click_freezes_after_delay(self):
         self.view.update(make_result(True), 1.0)
@@ -94,7 +94,7 @@ class HandDebugViewTests(unittest.TestCase):
         self.view.update(make_result(True), 1.0)
         self.view.answer(False)  # Live: nothing to answer.
         self.assertFalse((self.folder / "dataset.jsonl").exists())
-        self.view.freeze("manuale")
+        self.view.freeze("manual")
         self.view.answer(False)
         record = json.loads((self.folder / "dataset.jsonl").read_text(encoding="utf-8"))
         self.assertEqual((record["label"], record["detected"]), (False, True))
@@ -110,9 +110,9 @@ class HandDebugViewTests(unittest.TestCase):
         self.assertEqual(vanish.phase, "ready")
         vanish.sound.play.assert_not_called()
         self.assertTrue(self.view.frozen)
-        self.assertEqual(self.view.reason, "rilevato")
+        self.assertEqual(self.view.reason, "detected")
         self.assertEqual(self.view.hold, 1.0)
-        self.assertIn("SI / NO", vanish.status())
+        self.assertIn("YES / NO", vanish.status())
         submitted = vanish.watcher.submitted
         vanish.process(frame, 1.5)
         self.assertEqual(vanish.watcher.submitted, submitted)  # Paused while waiting.
