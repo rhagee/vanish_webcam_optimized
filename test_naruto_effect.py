@@ -7,7 +7,8 @@ import numpy as np
 
 import vanish_cam as app
 from naruto_effect import (
-    EFFECT_SECONDS, LOG_MAX_HEIGHT, falling_log_anchor, joined_hands_from_landmarks,
+    EFFECT_SECONDS, JOIN_RULES, LOG_MAX_HEIGHT, falling_log_anchor, hand_points,
+    joined_hands_check, joined_hands_from_landmarks,
     landed_log_anchor, load_log, overlay_log, render_substitution, substitution_anchor,
 )
 
@@ -30,10 +31,28 @@ class JoinedHandsTests(unittest.TestCase):
         self.assertFalse(joined_hands_from_landmarks([left, hand(0.83)], 640, 480))
         self.assertFalse(joined_hands_from_landmarks([left, hand(0.55, upward=False)], 640, 480))
 
-    def test_rotated_joined_hands_still_recognized(self):
+    def test_horizontal_hands_are_rejected(self):
+        # Hands lying flat (e.g. on the desk) were the most common false positive.
         hands = [hand(0.45), hand(0.55)]
         rotated = [[SimpleNamespace(x=point.y, y=1 - point.x) for point in h] for h in hands]
-        self.assertTrue(joined_hands_from_landmarks(rotated, 480, 640))
+        self.assertFalse(joined_hands_from_landmarks(rotated, 480, 640))
+
+    def test_fists_are_rejected(self):
+        fists = [hand(0.45), hand(0.55)]
+        for h in fists:
+            for tip in (8, 12, 16, 20):  # Fingertips curled back near the knuckles.
+                h[tip] = SimpleNamespace(x=h[tip].x, y=0.60)
+        self.assertFalse(joined_hands_from_landmarks(fists, 640, 480))
+
+    def test_hands_cut_by_the_frame_edge_are_rejected(self):
+        low = [[SimpleNamespace(x=p.x, y=p.y + 0.32) for p in h] for h in (hand(0.45), hand(0.55))]
+        self.assertFalse(joined_hands_from_landmarks(low, 640, 480))  # Wrists below the frame.
+
+    def test_check_reports_every_rule_value(self):
+        points = hand_points([hand(0.45), hand(0.55)], 640, 480)
+        check = joined_hands_check(points, 640, 480)
+        self.assertTrue(check["joined"])
+        self.assertEqual(set(check["values"]), {name for name, _, _ in JOIN_RULES})
 
 
 class SyncWatcher:
@@ -87,6 +106,13 @@ class StateMachineTests(unittest.TestCase):
         vanish = self.make_app([True, False, False, False, True, True])
         self.run_frames(vanish, (1.0, 1.1, 1.2, 1.3, 1.4, 1.5))
         self.assertEqual(vanish.phase, "ready")  # Hold restarted at 1.4.
+
+    def test_effect_never_fires_on_a_frame_that_is_not_recognized(self):
+        vanish = self.make_app([True, True, False, True])
+        self.run_frames(vanish, (1.0, 1.125, 1.25))
+        self.assertEqual(vanish.phase, "ready")  # Hold is complete but 1.25 is not joined.
+        self.run_frames(vanish, (1.3125,))
+        self.assertEqual(vanish.phase, "vanishing")
 
     def test_vanished_frame_is_computed_once(self):
         vanish = self.make_app(False)

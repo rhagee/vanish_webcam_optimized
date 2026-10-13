@@ -16,11 +16,18 @@ LOG_PATH = Path(__file__).resolve().parent / "assets" / "substitution_log.png"
 
 
 # Joined-hands rule: (name, limit, True if the value must stay below the limit).
+# Tuned on labeled samples from the "Debug mani" window: the old rule (only
+# distances) accepted fists, hands lying flat on the desk and hands half out of
+# frame; these limits rejected all 29 false positives and kept 11 of 15 real poses.
+# Each limit sits about halfway between the real poses and the nearest false
+# positive, leaving room for angled (oblique) views where the far hand looks smaller.
 JOIN_RULES = (
-    ("dimensione", 2.2, True),     # Larger hand / smaller hand.
-    ("allineamento", 0.25, False),  # Cosine between wrist->middle-finger directions.
-    ("palmi", 1.55, True),         # Palm-centre distance / hand size.
-    ("punte", 1.9, True),          # Fingertip-centre distance / hand size.
+    ("bordo", 0.01, False),       # Nearest landmark to the frame edge / frame size.
+    ("verso l'alto", 0.4, False),  # Wrist->middle knuckle pointing up (1 = vertical).
+    ("dito medio", 1.05, False),   # Middle tip-to-wrist / knuckle-to-wrist (fist ~0.6).
+    ("dimensione", 2.0, True),     # Larger hand / smaller hand.
+    ("palmi", 1.42, True),         # Palm-centre distance / hand size.
+    ("punte", 1.45, True),         # Fingertip-centre distance / hand size.
 )
 MIN_HAND_PIXELS = 8.0
 
@@ -31,8 +38,12 @@ def hand_points(hands, width: int, height: int) -> list[np.ndarray]:
             for hand in hands if len(hand) == 21]
 
 
-def joined_hands_check(points: list[np.ndarray]) -> dict:
-    """Measure the first two hands against JOIN_RULES; 'joined' is the verdict."""
+def joined_hands_check(points: list[np.ndarray], width: int, height: int) -> dict:
+    """Measure the first two hands against JOIN_RULES; 'joined' is the verdict.
+
+    Points are (21, 2) pixel arrays in a width x height frame. Landmark ids:
+    0 wrist, 5/9/13/17 index/middle/ring/pinky knuckles, 8/12/16/20 their tips.
+    """
     check = {"joined": False, "values": {}}
     if len(points) < 2 or not all(np.isfinite(hand).all() for hand in points[:2]):
         return check
@@ -42,13 +53,18 @@ def joined_hands_check(points: list[np.ndarray]) -> dict:
     if min(scale) < MIN_HAND_PIXELS:
         return check
     size = sum(scale) * 0.5
+    every = np.vstack(points)
     palms = [hand[[0, 5, 9, 13, 17]].mean(axis=0) for hand in points]
-    directions = [hand[9] - hand[0] for hand in points]
     fingertips = [hand[[8, 12, 16, 20]].mean(axis=0) for hand in points]
+    knuckle = [max(float(np.linalg.norm(hand[9] - hand[0])), 1e-6) for hand in points]
     values = {
+        # The model invents landmarks for hands cut by the frame edge.
+        "bordo": float(min(every[:, 0].min() / width, every[:, 1].min() / height,
+                           1 - every[:, 0].max() / width, 1 - every[:, 1].max() / height)),
+        "verso l'alto": min(float(hand[0][1] - hand[9][1]) / k for hand, k in zip(points, knuckle)),
+        "dito medio": min(float(np.linalg.norm(hand[12] - hand[0])) / k
+                          for hand, k in zip(points, knuckle)),
         "dimensione": max(scale) / min(scale),
-        "allineamento": float(np.dot(*directions) / max(
-            1e-6, np.linalg.norm(directions[0]) * np.linalg.norm(directions[1]))),
         "palmi": float(np.linalg.norm(palms[0] - palms[1])) / size,
         "punte": float(np.linalg.norm(fingertips[0] - fingertips[1])) / size,
     }
@@ -59,8 +75,8 @@ def joined_hands_check(points: list[np.ndarray]) -> dict:
 
 
 def joined_hands_from_landmarks(hands, width: int, height: int) -> bool:
-    """Recognize two nearby, similarly oriented open hands in image space."""
-    return joined_hands_check(hand_points(hands, width, height))["joined"]
+    """Recognize two joined, upright hands with extended fingers (see JOIN_RULES)."""
+    return joined_hands_check(hand_points(hands, width, height), width, height)["joined"]
 
 
 def substitution_anchor(mask: np.ndarray) -> tuple[int, int, int]:

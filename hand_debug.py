@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import Counter, deque
 
 import cv2
 import numpy as np
@@ -20,8 +21,10 @@ DEBUG_NAME = "Debug mani"
 DEBUG_DIR = DATA_DIR / "debug"
 DATASET_PATH = DEBUG_DIR / "dataset.jsonl"
 VIEW_WIDTH = 640
-PANEL_HEIGHT = 230
+PANEL_HEIGHT = 300
 FREEZE_DELAY_SECONDS = 3.0
+RECENT_SECONDS = 2.0
+ONE_HAND = "1 mano sola"
 
 # MediaPipe hand skeleton.
 CONNECTIONS = (
@@ -38,8 +41,20 @@ def _text(image, text, origin, scale=0.5, color=WHITE, thickness=1):
     cv2.putText(image, text, origin, FONT, scale, color, thickness, cv2.LINE_AA)
 
 
+def blocking_rules(result) -> list[str]:
+    """Rules failed by the closest pass (fewest failures); ONE_HAND if no pass saw two."""
+    if result.joined:
+        return []
+    failures = [
+        [name for name, limit, below in JOIN_RULES
+         if not ((p.check["values"][name] < limit) if below else (p.check["values"][name] > limit))]
+        for p in result.passes if p.check["values"]
+    ]
+    return min(failures, key=len) if failures else [ONE_HAND]
+
+
 class HandDebugView:
-    """Live view; click the image to freeze, then label it with SI / NO."""
+    """Live view that freezes (on detection or click) until labeled SI / NO."""
 
     def __init__(self):
         self.result = None
@@ -52,6 +67,7 @@ class HandDebugView:
         self.image_height = 0
         self.dirty = True
         self.last_countdown = None
+        self.recent: deque = deque()  # (seen_at, joined, blocking rules) per result.
         cv2.namedWindow(DEBUG_NAME, cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback(DEBUG_NAME, self._on_mouse)
         print(f"[Debug] Finestra '{DEBUG_NAME}' aperta. Campioni salvati in {DEBUG_DIR}")
@@ -59,6 +75,21 @@ class HandDebugView:
     def update(self, result, hold: float) -> None:
         if not self.frozen:
             self.result, self.hold, self.dirty = result, hold, True
+            self.recent.append((result.seen_at, result.joined, blocking_rules(result)))
+            while self.recent and result.seen_at - self.recent[0][0] > RECENT_SECONDS:
+                self.recent.popleft()
+
+    def recent_summary(self) -> dict:
+        """Share of recognized frames in the last RECENT_SECONDS and what blocked the rest."""
+        total = len(self.recent)
+        if not total:
+            return {"frames": 0, "ok": 0.0, "blocked_by": {}}
+        counts = Counter(rule for _, _, rules in self.recent for rule in rules)
+        return {
+            "frames": total,
+            "ok": sum(joined for _, joined, _ in self.recent) / total,
+            "blocked_by": {rule: round(n / total, 2) for rule, n in counts.most_common()},
+        }
 
     def freeze(self, reason: str) -> None:
         if self.result is not None:
@@ -67,18 +98,21 @@ class HandDebugView:
     def resume(self) -> None:
         self.frozen, self.freeze_at, self.dirty = False, None, True
 
+    def answer(self, is_naruto: bool) -> None:
+        """SI / NO (buttons or S / N keys); only a frozen frame can be answered."""
+        if self.frozen:
+            self.label(is_naruto)
+
     def _on_mouse(self, event, x, y, flags, userdata) -> None:
-        if event == cv2.EVENT_LBUTTONUP:
-            for label, (x1, y1, x2, y2) in self.buttons.items():
-                if self.frozen and x1 <= x <= x2 and y1 <= y <= y2:
-                    self.label(label)
-                    return
-            if y < self.image_height:
-                if self.frozen:
-                    self.resume()
-                else:
-                    self.freeze("manuale")
-        elif event == cv2.EVENT_RBUTTONUP and not self.frozen:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if self.frozen:
+                for is_naruto, (x1, y1, x2, y2) in self.buttons.items():
+                    if x1 <= x <= x2 and y1 <= y <= y2:
+                        self.answer(is_naruto)
+                        return
+            elif y < self.image_height:
+                self.freeze("manuale")
+        elif event == cv2.EVENT_RBUTTONDOWN and not self.frozen:
             self.freeze_at = time.perf_counter() + FREEZE_DELAY_SECONDS
             self.dirty = True
 
@@ -109,10 +143,11 @@ class HandDebugView:
             "image": f"{name}.jpg",
             "label": is_naruto,
             "detected": result.joined,
-            "reason": self.reason,  # manuale / timer / attivato (effect fired)
+            "reason": self.reason,  # manuale / timer / rilevato (algorithm fired)
             "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "frame_size": [width, height],
             "hold": round(self.hold, 3),
+            "last_2s": self.recent_summary(),  # How steady recognition was before the freeze.
             "rules": [list(rule) for rule in JOIN_RULES],
             "passes": [{
                 "name": p.name,
@@ -171,21 +206,29 @@ class HandDebugView:
         for p in result.passes:
             color = PASS_COLORS.get(p.name, WHITE)
             _text(panel, f"{p.name}: mani {len(p.hands)}", (12, y), 0.5, color)
-            x = 130
-            for name, limit, below in JOIN_RULES:
+            for index, (name, limit, below) in enumerate(JOIN_RULES):
                 value = p.check["values"].get(name)
                 if value is None:
                     text, passed = f"{name} -", False
                 else:
                     passed = value < limit if below else value > limit
                     text = f"{name} {value:.2f}{'<' if below else '>'}{limit:g}"
-                _text(panel, text, (x, y), 0.42, GREEN if passed else RED)
-                x += 128
-            y += 26
+                column, row = index % 3, index // 3
+                _text(panel, text, (125 + column * 172, y + row * 20), 0.42,
+                      GREEN if passed else RED)
+            y += 20 * ((len(JOIN_RULES) + 2) // 3) + 8
         cv2.rectangle(panel, (12, y), (12 + 200, y + 12), GREY, 1)
         cv2.rectangle(panel, (12, y), (12 + int(200 * self.hold), y + 12), GREEN, -1)
         _text(panel, "tenuta prima dell'effetto", (222, y + 11), 0.42, GREY)
         y += 34
+        summary = self.recent_summary()
+        if summary["frames"]:
+            blocked = ", ".join(f"{rule} {share:.0%}"
+                                for rule, share in list(summary["blocked_by"].items())[:3])
+            _text(panel, f"Ultimi 2 s: riconosciuto {summary['ok']:.0%}"
+                         + (f"  |  blocca: {blocked}" if blocked else ""),
+                  (12, y), 0.45, (0, 220, 255))
+        y += 22
 
         self.buttons = {}
         if self.frozen:
@@ -201,7 +244,7 @@ class HandDebugView:
             y += 62
         else:
             y += 6
-        hint = ("Clic sull'immagine: riprendi senza salvare" if self.frozen else
+        hint = ("Scegli con i bottoni oppure con i tasti S / N" if self.frozen else
                 "Clic sull'immagine: blocca ora  |  Clic destro: blocca tra 3 s")
         _text(panel, hint, (12, min(y, PANEL_HEIGHT - 30)), 0.45, GREY)
         if self.message:

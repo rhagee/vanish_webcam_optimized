@@ -269,7 +269,8 @@ class HandWatcher:
         found = hand_points(
             self.hands.detect_for_video(to_mp_image(frame), timestamp_ms).hand_landmarks,
             width, height)
-        passes = [HandPass("intera", (0, 0, width, height), found, joined_hands_check(found))]
+        passes = [HandPass("intera", (0, 0, width, height), found,
+                           joined_hands_check(found, width, height))]
         if not passes[0].check["joined"] and self.zoomed_hands is not None:
             # Pressed-together palms are small and easy to miss in the full frame.
             top, bottom, left, right = HAND_CROP
@@ -278,7 +279,8 @@ class HandWatcher:
                 self.zoomed_hands.detect(to_mp_image(frame[y1:y2, x1:x2])).hand_landmarks,
                 x2 - x1, y2 - y1)
             zoomed = [hand + (x1, y1) for hand in zoomed]  # Back to full-frame pixels.
-            passes.append(HandPass("zoom", (x1, y1, x2, y2), zoomed, joined_hands_check(zoomed)))
+            passes.append(HandPass("zoom", (x1, y1, x2, y2), zoomed,
+                                   joined_hands_check(zoomed, width, height)))
         return HandResult(
             seen_at=now,
             joined=any(p.check["joined"] for p in passes),
@@ -365,6 +367,10 @@ class NarutoVanish:
             return f"Cattura dello sfondo in corso... {left} s"
         if self.phase == "waiting":
             return "Nessuno sfondo: premi Cattura sfondo o scegline uno"
+        if self.phase == "ready" and self.debug_view is not None:
+            if self.debug_view.frozen:
+                return "Debug: era la posa Naruto? Rispondi SI / NO (tasti S / N)"
+            return "Debug: l'effetto non parte, la finestra Debug mani chiede SI / NO"
         if self.phase == "ready":
             return "Pronto: unisci i palmi per svanire"
         return "Sparito: Ctrl+Alt+R per riapparire"
@@ -383,17 +389,27 @@ class NarutoVanish:
         if self.phase == "waiting":
             return frame
         if self.phase == "ready":
+            debug = self.debug_view
+            if debug is not None and debug.frozen:
+                # Waiting for the SI/NO answer: pause detection and the hold timer.
+                self.joined_since = None
+                return frame
             self.watcher.submit(frame, now)
             result = self.watcher.take_result()
             if result is None:
                 return frame
             hold = self._hold_progress(result)
-            if self.debug_view is not None:
-                self.debug_view.update(result, hold)
-            if hold >= 1.0:
-                self.vanish(frame, now)
-                if self.debug_view is not None:
-                    self.debug_view.freeze("attivato")  # Label what just fired the effect.
+            if debug is not None:
+                debug.update(result, hold)
+            # Fire only on a frame that is itself recognized, not on one that
+            # merely falls inside the grace period after the last recognized frame.
+            if hold >= 1.0 and result.joined:
+                if debug is not None:
+                    # Debug mode never plays the effect: freeze and ask instead.
+                    debug.freeze("rilevato")
+                    self.joined_since = None
+                else:
+                    self.vanish(frame, now)
             return frame
         if self.vanished_frame is None:  # Vanishing, or vanished but needs a redraw.
             mask = person_mask(self.segmenter, frame) if age < PERSON_FADE_SECONDS else None
@@ -460,9 +476,10 @@ def run() -> int:
         return run_camera(args, resources)
 
 
-KEY_ACTIONS = {  # Only while the preview is focused; see global_hotkeys for the rest.
+KEY_ACTIONS = {  # While an app window is focused; see global_hotkeys for the rest.
     ord(" "): "capture", ord("b"): "capture", ord("u"): "upload",
     ord("r"): "reappear", ord("v"): "vanish", ord("f"): "fullscreen", ord("d"): "debug",
+    ord("s"): "answer_yes", ord("n"): "answer_no",  # Debug mani: SI / NO.
 }
 
 
@@ -571,6 +588,8 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
                     except (RuntimeError, OSError) as error:
                         print(f"[Sfondi] {error}")
                     files = list_backgrounds()
+            elif action in ("answer_yes", "answer_no") and app.debug_view is not None:
+                app.debug_view.answer(action == "answer_yes")
             elif action == "debug":
                 if app.debug_view is None:
                     app.debug_view = HandDebugView()

@@ -68,12 +68,16 @@ separata dal video: mostra i punti delle mani trovati sul fotogramma intero
 (verde) e nel ritaglio ingrandito (arancione), i valori di ogni controllo e il
 verdetto dell'algoritmo attuale (**OK** verde / **NO** rosso).
 
-- Clic sull'immagine: blocca il fotogramma (clic di nuovo per riprendere).
+In modalità debug l'effetto **non parte**: quando l'algoritmo riconosce la
+posa, la finestra si blocca su quel fotogramma e resta ferma finché non
+rispondi **SI** (era la posa Naruto) o **NO** (falso positivo), con i bottoni
+oppure con i tasti `S` / `N`.
+
+- Clic sull'immagine: blocca subito il fotogramma (utile per le pose giuste
+  che l'algoritmo non riconosce).
 - Clic destro: blocca tra 3 secondi, così hai le mani libere per la posa.
-- Quando l'effetto parte, la finestra si blocca da sola su ciò che l'ha attivato.
-- Con il fotogramma bloccato, **SI** / **NO** indica se era davvero la posa
-  Naruto. Ogni risposta salva l'immagine e i dati in `debug/dataset.jsonl`,
-  utili per migliorare il riconoscimento.
+- Ogni risposta salva l'immagine e i dati in `debug/dataset.jsonl`, utili per
+  migliorare il riconoscimento.
 
 ## Webcam virtuale e OBS
 
