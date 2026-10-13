@@ -18,7 +18,7 @@ webcam.
    sfondo per 3 secondi e lo salva. Agli avvii successivi riusa lo sfondo
    scelto l'ultima volta, senza attese.
 3. Unisci i palmi davanti alla webcam, con le dita affiancate, e **tienili
-   uniti per mezzo secondo**: il corpo svanisce in una nube di fumo, compare
+   uniti per un attimo** (0,2 s): il corpo svanisce in una nube di fumo, compare
    un tronco che cade e resta visibile finché non riappari.
 
 Quando parte la scomparsa viene riprodotto `assets/vanish.MP3`. Non serve un
@@ -51,6 +51,7 @@ Con la finestra dell'anteprima in primo piano:
 - `B` oppure `SPAZIO`: cattura un nuovo sfondo.
 - `U`: carica un'immagine come sfondo.
 - `R` / `V`: riappari / svanisci.
+- `D`: apre o chiude la finestra **Debug mani**.
 - `F`: attiva o disattiva lo schermo intero.
 - `Q` oppure `ESC`: chiude il programma e libera le webcam.
 
@@ -60,8 +61,19 @@ Puoi cambiare webcam, risoluzione e FPS:
 AVVIA_LOCALE.bat --camera 1 --width 1280 --height 720 --fps 30
 ```
 
-Per diagnosticare il riconoscimento delle mani senza scritte nel video,
-aggiungi `--gesture-debug`: le informazioni appaiono solo nel terminale.
+## Debug mani
+
+Avvia con `--debug` (oppure premi `D`) per aprire la finestra **Debug mani**,
+separata dal video: mostra i punti delle mani trovati sul fotogramma intero
+(verde) e nel ritaglio ingrandito (arancione), i valori di ogni controllo e il
+verdetto dell'algoritmo attuale (**OK** verde / **NO** rosso).
+
+- Clic sull'immagine: blocca il fotogramma (clic di nuovo per riprendere).
+- Clic destro: blocca tra 3 secondi, così hai le mani libere per la posa.
+- Quando l'effetto parte, la finestra si blocca da sola su ciò che l'ha attivato.
+- Con il fotogramma bloccato, **SI** / **NO** indica se era davvero la posa
+  Naruto. Ogni risposta salva l'immagine e i dati in `debug/dataset.jsonl`,
+  utili per migliorare il riconoscimento.
 
 ## Webcam virtuale e OBS
 

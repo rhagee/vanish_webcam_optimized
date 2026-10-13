@@ -1,3 +1,4 @@
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -35,60 +36,115 @@ class JoinedHandsTests(unittest.TestCase):
         self.assertTrue(joined_hands_from_landmarks(rotated, 480, 640))
 
 
+class SyncWatcher:
+    """Stand-in for HandWatcher: answers immediately, one value per submitted frame."""
+
+    def __init__(self, joined):
+        self.joined = iter(joined) if not isinstance(joined, bool) else None
+        self.always = joined if isinstance(joined, bool) else None
+        self.submitted = 0
+        self.result = None
+        self.close = Mock()
+
+    def submit(self, frame, now):
+        self.submitted += 1
+        joined = self.always if self.joined is None else next(self.joined)
+        self.result = app.HandResult(now, joined, 2 if joined else 1, frame)
+
+    def take_result(self):
+        result, self.result = self.result, None
+        return result
+
+
 class StateMachineTests(unittest.TestCase):
-    def make_app(self, found):
-        hands = Mock()
-        hands.detect_for_video.return_value = SimpleNamespace(hand_landmarks=found)
-        vanish = app.NarutoVanish(Mock(), hands, Mock(), load_log())
-        vanish.phase = "ready"
-        vanish.background = np.zeros((480, 640, 3), np.uint8)
+    frame = np.full((480, 640, 3), 90, np.uint8)
+
+    def make_app(self, joined):
+        vanish = app.NarutoVanish(Mock(), SyncWatcher(joined), Mock(), load_log())
+        vanish.set_background(np.zeros((480, 640, 3), np.uint8))
         return vanish
 
-    def test_effect_fires_only_after_holding_the_gesture(self):
-        frame = np.full((480, 640, 3), 90, np.uint8)
-        vanish = self.make_app([hand(0.45), hand(0.55)])
+    def run_frames(self, vanish, times):
         with patch.object(app, "person_mask", return_value=np.ones((480, 640), np.float32)):
-            for now in (1.0, 1.15, 1.3, 1.45):
-                vanish.process(frame, now)
-                self.assertEqual(vanish.phase, "ready")
-            vanish.process(frame, 1.6)
+            for now in times:
+                vanish.process(self.frame, now)
+
+    def test_effect_fires_after_holding_the_gesture_briefly(self):
+        vanish = self.make_app(True)
+        self.run_frames(vanish, (1.0, 1.125, 1.1875))
+        self.assertEqual(vanish.phase, "ready")
+        self.run_frames(vanish, (1.25,))
         self.assertEqual(vanish.phase, "vanishing")
-        self.assertEqual(vanish.phase_started, 1.6)
+        self.assertEqual(vanish.phase_started, 1.25)
         vanish.sound.play.assert_called_once()
+        self.assertEqual(vanish.watcher.submitted, 4)  # Every ready frame is analysed.
 
     def test_brief_dropout_is_tolerated_but_releasing_resets_the_hold(self):
-        frame = np.zeros((480, 640, 3), np.uint8)
-        joined = SimpleNamespace(hand_landmarks=[hand(0.45), hand(0.55)])
-        apart = SimpleNamespace(hand_landmarks=[hand(0.45)])
-        vanish = self.make_app([])
-        vanish.hands.detect_for_video.side_effect = [joined, apart, joined, joined]
-        with patch.object(app, "person_mask", return_value=np.ones((480, 640), np.float32)):
-            for now in (1.0, 1.15, 1.3, 1.5):
-                vanish.process(frame, now)
-        self.assertEqual(vanish.phase, "vanishing")  # One missed check kept the hold.
+        vanish = self.make_app([True, False, True])
+        self.run_frames(vanish, (1.0, 1.125, 1.25))
+        self.assertEqual(vanish.phase, "vanishing")  # One missed frame kept the hold.
 
-        vanish = self.make_app([])
-        vanish.hands.detect_for_video.side_effect = [joined, apart, apart, apart, joined, joined]
-        for now in (1.0, 1.15, 1.3, 1.45, 1.6, 1.75):
-            vanish.process(frame, now)
-        self.assertEqual(vanish.phase, "ready")  # Hold restarted at 1.6.
-
-    def test_hand_model_is_not_run_on_every_frame(self):
-        vanish = self.make_app([])
-        frame = np.zeros((480, 640, 3), np.uint8)
-        for now in (1.0, 1.033, 1.066, 1.1, 1.133, 1.166):
-            vanish.process(frame, now)
-        stamps = [c.args[1] for c in vanish.hands.detect_for_video.call_args_list]
-        self.assertEqual(stamps, [1000, 1133])
+        vanish = self.make_app([True, False, False, False, True, True])
+        self.run_frames(vanish, (1.0, 1.1, 1.2, 1.3, 1.4, 1.5))
+        self.assertEqual(vanish.phase, "ready")  # Hold restarted at 1.4.
 
     def test_vanished_frame_is_computed_once(self):
-        vanish = self.make_app([])
-        frame = np.zeros((480, 640, 3), np.uint8)
+        vanish = self.make_app(False)
         with patch.object(app, "person_mask", return_value=np.zeros((480, 640), np.float32)):
-            vanish.vanish(frame, 0.0)
-        final = vanish.process(frame, EFFECT_SECONDS)
+            vanish.vanish(self.frame, 0.0)
+        final = vanish.process(self.frame, EFFECT_SECONDS)
         self.assertEqual(vanish.phase, "vanished")
-        self.assertIs(vanish.process(frame, 5.0), final)
+        self.assertIs(vanish.process(self.frame, 5.0), final)
+
+
+class HandWatcherTests(unittest.TestCase):
+    frame = np.zeros((480, 640, 3), np.uint8)
+
+    @staticmethod
+    def models(full, zoomed):
+        hands, zoomed_hands = Mock(), Mock()
+        hands.detect_for_video.return_value = SimpleNamespace(hand_landmarks=full)
+        zoomed_hands.detect.return_value = SimpleNamespace(hand_landmarks=zoomed)
+        return hands, zoomed_hands
+
+    def make_watcher(self, full, zoomed):
+        watcher = app.HandWatcher(*self.models(full, zoomed))
+        self.addCleanup(watcher.close)
+        return watcher
+
+    def test_zoomed_crop_recovers_hands_missed_in_full_frame(self):
+        watcher = self.make_watcher([hand(0.45)], [hand(0.45), hand(0.55)])
+        result = watcher.detect(self.frame, 1.0)
+        self.assertEqual((result.joined, result.count), (True, 2))
+        self.assertEqual([p.name for p in result.passes], ["intera", "zoom"])
+        self.assertFalse(result.passes[0].check["joined"])
+        # Zoomed points are mapped back into full-frame pixels.
+        x1, y1 = result.passes[1].rect[:2]
+        self.assertGreater(result.passes[1].hands[0][:, 0].min(), x1)
+        crop = watcher.zoomed_hands.detect.call_args.args[0]
+        self.assertLess(crop.width, 640)
+        self.assertLess(crop.height, 480)
+
+    def test_full_frame_hit_skips_zoomed_retry_and_timestamps_increase(self):
+        watcher = self.make_watcher([hand(0.45), hand(0.55)], [])
+        result = watcher.detect(self.frame, 1.0)
+        self.assertEqual((result.joined, len(result.passes)), (True, 1))
+        watcher.detect(self.frame, 1.0)
+        watcher.zoomed_hands.detect.assert_not_called()
+        stamps = [c.args[1] for c in watcher.hands.detect_for_video.call_args_list]
+        self.assertEqual(stamps, [1000, 1001])
+
+    def test_worker_thread_publishes_latest_result_and_stops(self):
+        watcher = self.make_watcher([hand(0.45), hand(0.55)], [])
+        watcher.submit(self.frame, 2.5)
+        deadline = time.monotonic() + 5
+        result = None
+        while result is None and time.monotonic() < deadline:
+            result = watcher.take_result()
+            time.sleep(0.01)
+        self.assertEqual((result.seen_at, result.joined, result.count), (2.5, True, 2))
+        watcher.close()
+        self.assertFalse(watcher.thread.is_alive())
 
 
 class EffectTests(unittest.TestCase):

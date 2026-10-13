@@ -6,10 +6,12 @@ import argparse
 import os
 import platform
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from contextlib import ExitStack
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -23,8 +25,9 @@ from backgrounds import (
     read_image, remember_background, remembered_background, save_capture,
 )
 from global_hotkeys import GlobalHotkeys
+from hand_debug import HandDebugView
 from naruto_effect import (
-    EFFECT_SECONDS, PERSON_FADE_SECONDS, joined_hands_from_landmarks,
+    EFFECT_SECONDS, PERSON_FADE_SECONDS, hand_points, joined_hands_check,
     load_log, render_substitution, substitution_anchor,
 )
 from vanish_sound import SOUND_PATH, VanishSound
@@ -44,9 +47,10 @@ HAND_MODEL = APP_DIR / "hand_landmarker.task"
 CAPTURE_DELAY_SECONDS = 3.0  # Time to step out of the frame.
 CAPTURE_SECONDS = 3.0
 CAPTURE_SAMPLE_SECONDS = 0.15
-HAND_CHECK_SECONDS = 0.12  # ~8 checks per second is plenty for a held pose.
-HOLD_SECONDS = 0.5  # Palms must stay joined this long before the effect fires.
-HOLD_GRACE_SECONDS = 0.25  # Tolerate a missed detection while holding.
+HOLD_SECONDS = 0.2  # Palms must stay joined this long after first recognition.
+HOLD_GRACE_SECONDS = 0.2  # Tolerate missed detections while holding.
+# Region where joined hands usually are; retried zoomed-in when the full frame misses them.
+HAND_CROP = (0.18, 1.0, 0.12, 0.88)  # top, bottom, left, right (fractions)
 
 
 def positive_fps(value: str) -> float:
@@ -78,8 +82,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--virtual-device", help="Nome del dispositivo virtuale da usare")
     parser.add_argument(
-        "--gesture-debug", action="store_true",
-        help="Stampa nel terminale lo stato del riconoscimento (senza scritte nel video)",
+        "--debug", "--gesture-debug", dest="debug", action="store_true",
+        help="Apre la finestra Debug mani (tasto D) per vedere ed etichettare il riconoscimento",
     )
     parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -162,29 +166,33 @@ def open_camera(index: int, width: int, height: int, fps: float) -> cv2.VideoCap
     return capture
 
 
-def create_tasks() -> tuple[vision.ImageSegmenter, vision.HandLandmarker]:
+def create_tasks() -> tuple[vision.ImageSegmenter, vision.HandLandmarker, vision.HandLandmarker]:
+    """Segmenter, tracking hand model (VIDEO) and zoomed-crop hand model (IMAGE)."""
     if not HAND_MODEL.is_file():
         raise RuntimeError(f"Modello delle mani non trovato: {HAND_MODEL}")
-    # The segmenter only runs for a handful of frames per vanish, so IMAGE mode.
-    segmenter = vision.ImageSegmenter.create_from_options(vision.ImageSegmenterOptions(
-        base_options=python.BaseOptions(model_asset_path=str(SEGMENTER_MODEL)),
-        running_mode=vision.RunningMode.IMAGE,
-        output_confidence_masks=True,
-        output_category_mask=False,
-    ))
-    try:
-        hands = vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
-            base_options=python.BaseOptions(model_asset_path=str(HAND_MODEL)),
-            running_mode=vision.RunningMode.VIDEO,
-            num_hands=2,
-            min_hand_detection_confidence=0.35,
-            min_hand_presence_confidence=0.35,
-            min_tracking_confidence=0.45,
+    with ExitStack() as cleanup:
+        # The segmenter only runs for a handful of frames per vanish, so IMAGE mode.
+        segmenter = vision.ImageSegmenter.create_from_options(vision.ImageSegmenterOptions(
+            base_options=python.BaseOptions(model_asset_path=str(SEGMENTER_MODEL)),
+            running_mode=vision.RunningMode.IMAGE,
+            output_confidence_masks=True,
+            output_category_mask=False,
         ))
-    except Exception:
-        segmenter.close()
-        raise
-    return segmenter, hands
+        cleanup.callback(segmenter.close)
+        tasks = [segmenter]
+        for mode in (vision.RunningMode.VIDEO, vision.RunningMode.IMAGE):
+            hands = vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
+                base_options=python.BaseOptions(model_asset_path=str(HAND_MODEL)),
+                running_mode=mode,
+                num_hands=2,
+                min_hand_detection_confidence=0.35,
+                min_hand_presence_confidence=0.35,
+                min_tracking_confidence=0.45,
+            ))
+            cleanup.callback(hands.close)
+            tasks.append(hands)
+        cleanup.pop_all()  # Success: the caller owns them now.
+    return tuple(tasks)
 
 
 def to_mp_image(frame: np.ndarray) -> mp.Image:
@@ -204,17 +212,113 @@ def person_mask(segmenter: vision.ImageSegmenter, frame: np.ndarray) -> np.ndarr
     return np.clip((resized - 0.12) / 0.68, 0.0, 1.0)
 
 
+@dataclass
+class HandPass:
+    """One run of a hand model: full frame or zoomed crop (points in frame pixels)."""
+    name: str
+    rect: tuple[int, int, int, int]
+    hands: list[np.ndarray]
+    check: dict
+
+
+@dataclass
+class HandResult:
+    seen_at: float
+    joined: bool
+    count: int
+    frame: np.ndarray | None = None
+    passes: list[HandPass] = field(default_factory=list)
+
+
+class HandWatcher:
+    """Runs the hand models on a worker thread so the video never waits for them.
+
+    The main loop submits its latest frame; the worker always analyses the most
+    recent one (older frames are skipped) and publishes a HandResult.
+    """
+
+    def __init__(self, hands, zoomed_hands=None):
+        self.hands = hands
+        self.zoomed_hands = zoomed_hands
+        self.lock = threading.Lock()
+        self.wake = threading.Event()
+        self.frame: np.ndarray | None = None
+        self.frame_time = 0.0
+        self.result: HandResult | None = None
+        self.last_timestamp_ms = -1
+        self.running = True
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def submit(self, frame: np.ndarray, now: float) -> None:
+        with self.lock:
+            self.frame, self.frame_time = frame, now
+        self.wake.set()
+
+    def take_result(self) -> HandResult | None:
+        with self.lock:
+            result, self.result = self.result, None
+        return result
+
+    def detect(self, frame: np.ndarray, now: float) -> HandResult:
+        # VIDEO mode needs strictly increasing timestamps and tracks hands
+        # between calls, so it only runs the palm detector when needed.
+        timestamp_ms = max(int(now * 1000), self.last_timestamp_ms + 1)
+        self.last_timestamp_ms = timestamp_ms
+        height, width = frame.shape[:2]
+        found = hand_points(
+            self.hands.detect_for_video(to_mp_image(frame), timestamp_ms).hand_landmarks,
+            width, height)
+        passes = [HandPass("intera", (0, 0, width, height), found, joined_hands_check(found))]
+        if not passes[0].check["joined"] and self.zoomed_hands is not None:
+            # Pressed-together palms are small and easy to miss in the full frame.
+            top, bottom, left, right = HAND_CROP
+            x1, y1, x2, y2 = int(width * left), int(height * top), int(width * right), int(height * bottom)
+            zoomed = hand_points(
+                self.zoomed_hands.detect(to_mp_image(frame[y1:y2, x1:x2])).hand_landmarks,
+                x2 - x1, y2 - y1)
+            zoomed = [hand + (x1, y1) for hand in zoomed]  # Back to full-frame pixels.
+            passes.append(HandPass("zoom", (x1, y1, x2, y2), zoomed, joined_hands_check(zoomed)))
+        return HandResult(
+            seen_at=now,
+            joined=any(p.check["joined"] for p in passes),
+            count=max(len(p.hands) for p in passes),
+            frame=frame,
+            passes=passes,
+        )
+
+    def _run(self) -> None:
+        while True:
+            self.wake.wait()
+            self.wake.clear()
+            if not self.running:
+                return
+            with self.lock:
+                frame, now = self.frame, self.frame_time
+            try:
+                result = self.detect(frame, now)
+            except Exception as error:  # Keep watching; one bad frame must not stop it.
+                print(f"[Mani] Errore di riconoscimento: {error}")
+                continue
+            with self.lock:
+                self.result = result
+
+    def close(self) -> None:
+        self.running = False
+        self.wake.set()
+        self.thread.join(2.0)
+
+
 class NarutoVanish:
     """Per-frame state machine: (capturing) -> ready -> vanishing -> vanished."""
 
-    def __init__(self, segmenter, hands, sound, sprite: np.ndarray, debug: bool = False,
-                 on_captured=None):
+    def __init__(self, segmenter, watcher, sound, sprite: np.ndarray, on_captured=None):
         self.segmenter = segmenter
-        self.hands = hands
+        self.watcher = watcher
         self.sound = sound
         self.sprite = sprite
-        self.debug = debug
         self.on_captured = on_captured
+        self.debug_view = None  # HandDebugView while debug mode is on.
         self.phase = "waiting"  # No background yet.
         self.phase_started = 0.0
         self.now = 0.0
@@ -223,11 +327,8 @@ class NarutoVanish:
         self.last_sample = 0.0
         self.anchor: tuple[int, int, int] | None = None
         self.vanished_frame: np.ndarray | None = None
-        self.last_timestamp_ms = -1
-        self.last_hand_check = -HAND_CHECK_SECONDS
         self.joined_since: float | None = None
         self.last_joined = 0.0
-        self.last_debug = 0.0
 
     def set_background(self, image: np.ndarray) -> None:
         self.background = image
@@ -265,7 +366,7 @@ class NarutoVanish:
         if self.phase == "waiting":
             return "Nessuno sfondo: premi Cattura sfondo o scegline uno"
         if self.phase == "ready":
-            return "Pronto: tieni i palmi uniti per mezzo secondo"
+            return "Pronto: unisci i palmi per svanire"
         return "Sparito: Ctrl+Alt+R per riapparire"
 
     def process(self, frame: np.ndarray, now: float) -> np.ndarray:
@@ -282,10 +383,17 @@ class NarutoVanish:
         if self.phase == "waiting":
             return frame
         if self.phase == "ready":
-            if now - self.last_hand_check >= HAND_CHECK_SECONDS:
-                self.last_hand_check = now
-                if self._gesture_held(frame, now):
-                    self.vanish(frame, now)
+            self.watcher.submit(frame, now)
+            result = self.watcher.take_result()
+            if result is None:
+                return frame
+            hold = self._hold_progress(result)
+            if self.debug_view is not None:
+                self.debug_view.update(result, hold)
+            if hold >= 1.0:
+                self.vanish(frame, now)
+                if self.debug_view is not None:
+                    self.debug_view.freeze("attivato")  # Label what just fired the effect.
             return frame
         if self.vanished_frame is None:  # Vanishing, or vanished but needs a redraw.
             mask = person_mask(self.segmenter, frame) if age < PERSON_FADE_SECONDS else None
@@ -311,28 +419,18 @@ class NarutoVanish:
             if self.on_captured is not None:
                 self.on_captured(background)
 
-    def _gesture_held(self, frame: np.ndarray, now: float) -> bool:
-        """True once the palms have stayed joined for HOLD_SECONDS."""
-        if self._hands_joined(frame, now):
+    def _hold_progress(self, result: HandResult) -> float:
+        """Update the hold timer (by frame time); 1.0 means the gesture fires."""
+        seen_at = result.seen_at
+        if result.joined:
             if self.joined_since is None:
-                self.joined_since = now
-            self.last_joined = now
-        elif self.joined_since is not None and now - self.last_joined > HOLD_GRACE_SECONDS:
+                self.joined_since = seen_at
+            self.last_joined = seen_at
+        elif self.joined_since is not None and seen_at - self.last_joined > HOLD_GRACE_SECONDS:
             self.joined_since = None
-        return self.joined_since is not None and now - self.joined_since >= HOLD_SECONDS
-
-    def _hands_joined(self, frame: np.ndarray, now: float) -> bool:
-        # VIDEO mode needs strictly increasing timestamps and tracks hands
-        # between calls, so it only runs the palm detector when needed.
-        timestamp_ms = max(int(now * 1000), self.last_timestamp_ms + 1)
-        self.last_timestamp_ms = timestamp_ms
-        found = self.hands.detect_for_video(to_mp_image(frame), timestamp_ms).hand_landmarks
-        height, width = frame.shape[:2]
-        joined = joined_hands_from_landmarks(found, width, height)
-        if self.debug and now - self.last_debug >= 1.0:
-            print(f"[Mani] rilevate={len(found)}, unite={joined}")
-            self.last_debug = now
-        return joined
+        if self.joined_since is None:
+            return 0.0
+        return min(1.0, (seen_at - self.joined_since) / HOLD_SECONDS)
 
 
 def set_fullscreen(enabled: bool) -> None:
@@ -348,9 +446,8 @@ def self_test() -> int:
         raise RuntimeError(f"Risorse mancanti: {', '.join(missing)}")
     load_log()
     import pygame.mixer  # noqa: F401  The distributed build must contain its MP3 decoder.
-    segmenter, hands = create_tasks()
-    hands.close()
-    segmenter.close()
+    for task in create_tasks():
+        task.close()
     print("[Webcam] Self-test completato: modelli, asset e audio presenti.")
     return 0
 
@@ -365,7 +462,7 @@ def run() -> int:
 
 KEY_ACTIONS = {  # Only while the preview is focused; see global_hotkeys for the rest.
     ord(" "): "capture", ord("b"): "capture", ord("u"): "upload",
-    ord("r"): "reappear", ord("v"): "vanish", ord("f"): "fullscreen",
+    ord("r"): "reappear", ord("v"): "vanish", ord("f"): "fullscreen", ord("d"): "debug",
 }
 
 
@@ -373,9 +470,12 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
     download_models()
     capture = open_camera(args.camera, args.width, args.height, args.fps)
     resources.callback(capture.release)
-    segmenter, hands = create_tasks()
+    segmenter, hands, zoomed_hands = create_tasks()
     resources.callback(segmenter.close)
     resources.callback(hands.close)
+    resources.callback(zoomed_hands.close)
+    watcher = HandWatcher(hands, zoomed_hands)
+    resources.callback(watcher.close)  # Runs first: stop the thread before closing models.
     sound = VanishSound()
     resources.callback(sound.close)
     resources.callback(cv2.destroyAllWindows)
@@ -405,15 +505,16 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
         select(save_capture(image))
         files = list_backgrounds()
 
-    app = NarutoVanish(segmenter, hands, sound, load_log(),
-                       debug=args.gesture_debug, on_captured=captured)
+    app = NarutoVanish(segmenter, watcher, sound, load_log(), on_captured=captured)
+    if args.debug:
+        app.debug_view = HandDebugView()
     if selected is not None:
         select(selected)
     if app.background is None:
         selected = None
         app.capture_background(time.perf_counter())
     print("[Webcam] Tasti nella finestra: B/SPAZIO cattura sfondo, U carica immagine, "
-          "R riappari, V svanisci, F fullscreen, Q esci.")
+          "R riappari, V svanisci, D debug mani, F fullscreen, Q esci.")
     virtual_camera = None
     first_frame = True
     last_status = None
@@ -442,6 +543,8 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
             print(f"[Webcam] {status}")
             last_status = status
         panel.show(files, selected, status)
+        if app.debug_view is not None:
+            app.debug_view.tick(now)
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27) or cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
@@ -468,6 +571,12 @@ def run_camera(args: argparse.Namespace, resources: ExitStack) -> int:
                     except (RuntimeError, OSError) as error:
                         print(f"[Sfondi] {error}")
                     files = list_backgrounds()
+            elif action == "debug":
+                if app.debug_view is None:
+                    app.debug_view = HandDebugView()
+                else:
+                    app.debug_view.close()
+                    app.debug_view = None
             elif action == "fullscreen":
                 fullscreen = not fullscreen
                 set_fullscreen(fullscreen)

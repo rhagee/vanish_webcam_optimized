@@ -10,3 +10,4 @@ models/
 !/dist/VanishCam.exe
 backgrounds/
 settings.json
+debug/

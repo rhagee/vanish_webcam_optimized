@@ -8,13 +8,14 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 import vanish_cam as app
+from test_naruto_effect import SyncWatcher
 
 
 def arguments(**overrides):
     values = dict(
         camera=0, width=960, height=540, fps=30.0, fullscreen=False,
         no_mirror=True, virtual_camera=None, virtual_backend=None, virtual_device=None,
-        gesture_debug=False, self_test=False,
+        debug=False, self_test=False,
     )
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -80,8 +81,8 @@ def run_mock_video(test, frames, times, keys, joined=False, send_error=None,
     capture = Mock()
     capture.read.side_effect = [(True, frame) for frame in frames]
     height, width = frames[0].shape[:2]
-    segmenter, hands, sound = Mock(), Mock(), Mock()
-    hands.detect_for_video.return_value = SimpleNamespace(hand_landmarks=[])
+    segmenter, hands, zoomed_hands, sound = Mock(), Mock(), Mock(), Mock()
+    watcher = SyncWatcher(joined)
     camera = Mock(width=width, height=height)
     camera.send.side_effect = send_error
     shown = []
@@ -89,12 +90,12 @@ def run_mock_video(test, frames, times, keys, joined=False, send_error=None,
         mocks.enter_context(patch.object(app, "parse_args", return_value=arguments()))
         mocks.enter_context(patch.object(app, "download_models"))
         mocks.enter_context(patch.object(app, "open_camera", return_value=capture))
-        mocks.enter_context(patch.object(app, "create_tasks", return_value=(segmenter, hands)))
+        mocks.enter_context(patch.object(app, "create_tasks", return_value=(segmenter, hands, zoomed_hands)))
+        mocks.enter_context(patch.object(app, "HandWatcher", return_value=watcher))
         mocks.enter_context(patch.object(app, "VanishSound", return_value=sound))
         opening = mocks.enter_context(patch.object(app, "open_virtual_camera", return_value=camera))
         mask = mocks.enter_context(patch.object(
             app, "person_mask", return_value=np.ones((height, width), np.float32)))
-        mocks.enter_context(patch.object(app, "joined_hands_from_landmarks", return_value=joined))
         mocks.enter_context(patch.object(app.time, "perf_counter", side_effect=times))
         mocks.enter_context(patch.object(app, "GlobalHotkeys", return_value=hotkeys))
         mocks.enter_context(patch.object(app, "BackgroundPanel", return_value=panel))
@@ -122,11 +123,13 @@ def run_mock_video(test, frames, times, keys, joined=False, send_error=None,
         capture.release.assert_called_once()
         segmenter.close.assert_called_once()
         hands.close.assert_called_once()
+        zoomed_hands.close.assert_called_once()
+        watcher.close.assert_called_once()
         sound.close.assert_called_once()
         camera.close.assert_called_once()
         destroy.assert_called_once()
         hotkeys.close.assert_called_once()
-    return camera, shown, SimpleNamespace(hands=hands, sound=sound, mask=mask,
+    return camera, shown, SimpleNamespace(watcher=watcher, sound=sound, mask=mask,
                                           save=save, remember=remember)
 
 
@@ -142,7 +145,7 @@ class VideoLoopTests(unittest.TestCase):
             np.testing.assert_array_equal(sent.args[0], preview)
         for frame, preview in zip(self.frames, shown):
             np.testing.assert_array_equal(preview, frame)
-        self.assertEqual(mocks.hands.detect_for_video.call_count, 2)  # 6.4 is throttled.
+        self.assertEqual(mocks.watcher.submitted, 3)  # Every ready frame is analysed.
         mocks.mask.assert_not_called()  # No segmentation until the effect starts.
         mocks.sound.play.assert_not_called()
         mocks.save.assert_called_once()  # Captured background saved and remembered.
@@ -164,7 +167,7 @@ class VideoLoopTests(unittest.TestCase):
         times = (0, 0.1, 6.1, 6.3, 6.85, 7.4, 8.5, 8.6)
         camera, shown, mocks = run_mock_video(
             self, frames, times, (0, 0, 0, 0, 0, 0, ord("q")), joined=True)
-        self.assertEqual(mocks.hands.detect_for_video.call_count, 2)
+        self.assertEqual(mocks.watcher.submitted, 2)
         mocks.sound.play.assert_called_once()
         background = frames[1]
         np.testing.assert_array_equal(shown[2], frames[2])
